@@ -6,8 +6,9 @@ Covers the full pipeline from dataset preparation to edge deployment:
 camera detection, LiDAR 3D detection, sensor fusion, quantization,
 and TensorRT C++ deployment.
 
-Designed for low-cost edge hardware (~$260), achieving 193 FPS at 12.2W
-(15.8 FPS/W) — 5.4× better power efficiency than the Python FP32 baseline.
+Designed for low-cost edge hardware (~$260), achieving **202 FPS at 8.03W**
+in live camera deployment — under 10W at real-world 30 FPS workload.
+Peak stress-test throughput: 193 FPS at 12.2W (15.8 FPS/W).
 
 ---
 
@@ -25,6 +26,54 @@ maximizing benchmark accuracy.
 ---
 
 ## Demo
+
+### Live Camera Inference — USB Webcam (202 FPS)
+
+> Recorded with phone camera. USB webcam pointed at Tokyo driving footage.
+> C++ TRT INT8 pipeline running on Jetson Orin Nano Super 8GB.
+
+📹 **[Watch: Live Camera Demo](https://youtu.be/zx4OrOlAXBs)**
+
+```
+Camera        : USB webcam, 1280×720 @ 30 FPS
+Mean FPS      : 202.6
+Preprocess    : 1.1ms
+TRT inference : 3.7ms
+Total power   : 8.03W (VDD_IN)  ← under 10W at real-world load
+GPU load      : 19–39%  @  54.7°C
+CPU load      : 6%      @  55.7°C
+RAM           : ~200MB inference overhead (1.9GB total)
+```
+
+---
+
+### Pre-recorded Video Inference — Tokyo Driving Footage (183 FPS)
+
+> Screen recording via VNC. NVDEC hardware-accelerated video decode.
+> VNC adds ~10–15 FPS overhead vs native — isolated inference reaches 195.2 FPS.
+
+📹 **[Watch: Video Inference Demo](https://youtu.be/UsOV8r5H1lY)**
+
+```
+Input         : 1280×720 @ 50 FPS (NVDEC hardware decode)
+Mean FPS      : 183.5  (195.2 FPS without VNC)
+Preprocess    : 1.2ms
+TRT inference : 4.1ms
+Total power   : 10.53W (VDD_IN) higher due to NVDEC load  (10.2W without VNC) 
+GPU load      : 31–42%  @  55.8°C
+CPU load      : 34%     @  55.5°C  ← VNC CPU overhead
+RAM           : ~200MB inference overhead (2.1GB total)
+```
+
+**Note on power difference:**
+```
+Base system power (idle) : ~7.3W  (same for both)
+USB camera overhead      : +0.7W  → 8.03W total
+Video + NVDEC overhead   : +3.2W  → 10.53W total
+Isolated video (no VNC)  : +2.9W  → 10.2W total
+```
+
+---
 
 ### Camera-LiDAR Late Fusion — Bird's Eye View
 
@@ -67,7 +116,7 @@ nuScenes Mini. Blue = LiDAR only | Green = Camera only | Red = Fused.
 │   PTQ FP32→FP16→INT8  |  QAT  |  ONNX  |  TFLite  |  TensorRT    │
 ├──────────────────────────────────────────────────────────────────┤
 │              Jetson Orin Nano Super Deployment                   │
-│     C++ TensorRT  |  193 FPS INT8  |  ~12W  |  Live Camera       │
+│     C++ TensorRT  |  202 FPS INT8  |  ~8.03W  |  Live Camera     │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -150,6 +199,14 @@ See [`solutions/README.md`](solutions/README.md) for demos.
 **Hardware:** Jetson Orin Nano Super 8GB (67 TOPS) | JetPack R36.4.7 | CUDA 12.6 | TensorRT 10.3.0
 **Benchmark conditions:** `sudo jetson_clocks` (max clocks locked)
 
+#### Full Pipeline Breakdown — C++ TRT INT8 Deployment 
+**[(footage video source)](https://www.youtube.com/watch?v=qPgWV8Rxemo)**
+| Format | FPS | Pre | TRT | Post | Total/frame | Engine |
+|---|---|---|---|---|---|---|
+| **C++ TRT INT8 (USB camera)** | **202.6** | **1.1ms** | **3.7ms** | — | **4.8ms** | 5.4 MB |
+| **C++ TRT INT8 (video NVDEC)** | **195.2** | **1.2ms** | **4.1ms** | — | **5.3ms** | 5.4 MB |
+| **C++ TRT INT8 (video NVDEC + VNC)** | **183.5** | **1.1ms** | **4.0ms** | — | **5.1ms** | 5.4 MB |
+
 #### Full Pipeline Breakdown — 404 nuScenes Images, 60s run
 
 | Format | FPS | Pre | TRT | Post | Total/frame | Engine |
@@ -157,7 +214,9 @@ See [`solutions/README.md`](solutions/README.md) for demos.
 | Python FP32 | 29.1 | 5.2ms | 27.6ms | 1.1ms | 34.0ms | 5.1 MB |
 | Python TRT FP16 | 87.6 | 5.6ms | 4.2ms | 1.2ms | 11.0ms | 8.0 MB |
 | Python TRT INT8 | 78.5 | 5.6ms | **3.5ms** | 3.2ms | 12.3ms | 5.4 MB |
-| **C++ TRT INT8** | **193.3** | **1.7ms** | **3.5ms** | — | **5.1ms** | 5.4 MB |
+| **C++ TRT INT8 (bench)** | **193.3** | **1.7ms** | **3.5ms** | — | **5.1ms** | 5.4 MB |
+
+> Benchmark uses 1600×900 nuScenes images. USB camera and video use 1280×720 → faster preprocessing.
 
 #### Full Pipeline Breakdown — Single Image (20 iterations)
 
@@ -194,18 +253,26 @@ C++ decoder handles INT8 output directly with no such overhead.
 **C++ total speedup over Python FP32:**
 ```
 Python FP32  : 29.1 FPS
-C++ TRT INT8 : 193.3 FPS → +564% faster
+C++ TRT INT8 : 202.6FPS (live camera) → +596% faster
 ```
 
-#### Power & Thermal (C++ TRT INT8, jetson_clocks, 60s run)
+#### Power & Thermal
 
-| Metric | Value |
-|---|---|
-| Total board power (VDD_IN) | ~12.2W |
-| CPU+GPU power (VDD_CPU_GPU_CV) | ~5.0W |
-| GPU temperature | ~57-58°C (stable) |
-| GPU utilization | 57-87% |
-| No thermal throttling | ✅ |
+| Condition | FPS | VDD_IN | CPU+GPU | GPU % | Temp |
+|---|---|---|---|---|---|
+| Benchmark (jetson_clocks, 404 images) | 193.3 | ~12.2W | ~5.0W | 57-87% | ~58°C |
+| **USB camera (30 FPS real-world load)** | **202.6** | **8.03W** | **2.0W** | **19-39%** | **~55°C** |
+| Video + NVDEC (no VNC) | 195.2 | ~10.2W | ~3.0W | 31-42% | ~56°C |
+
+```
+Base system idle        : ~7.3W
+USB camera overhead     : +0.7W → 8.03W  ← real deployment power
+Video + NVDEC overhead  : +2.9W → ~10.2W  ← NVDEC sharing UMA bandwidth
+Benchmark (stress test) : +4.9W → 12.2W  ← worst-case sustained load
+```
+
+**Under real 30 FPS camera load, the pipeline stays under 10W** —
+the 12.2W benchmark figure is a synthetic maximum, not typical deployment power.
 
 #### Benchmark Plot
 

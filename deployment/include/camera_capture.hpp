@@ -32,6 +32,14 @@ struct CameraConfig {
 std::string buildCSIPipeline(int sensor_id, int width, int height, int fps);
 
 /**
+ * Build a GStreamer pipeline for hardware-accelerated video file decode.
+ * Uses nvv4l2decoder (NVDEC) — eliminates ~3-4ms software decode per frame.
+ * Auto-detects H.265 from filename, defaults to H.264.
+ * Used automatically when --video is specified; falls back to software decode.
+ */
+std::string buildVideoNVDECPipeline(const std::string& path);
+
+/**
  * Run live camera inference loop.
  * Blocks until user presses 'q' or SIGINT.
  *

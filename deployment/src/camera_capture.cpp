@@ -70,7 +70,35 @@ std::string buildCSIPipeline(int sensor_id, int width, int height, int fps) {
     return ss.str();
 }
 
-// ── HUD helpers ────────────────────────────────────────────────────────────────
+std::string buildVideoNVDECPipeline(const std::string& path) {
+    /**
+     * Hardware-accelerated video decode via NVDEC (nvv4l2decoder).
+     * Eliminates ~3-4ms software H.264 decode per frame.
+     *
+     * Software decode (default): cap.open(path)     → ~130 FPS
+     * NVDEC hardware decode:     cap.open(pipeline) → ~190+ FPS
+     *
+     * Supports H.264 (default) and H.265 (detected from path name).
+     */
+    std::string codec_parse = "h264parse";
+    if (path.find("265")  != std::string::npos ||
+        path.find("hevc") != std::string::npos ||
+        path.find("HEVC") != std::string::npos) {
+        codec_parse = "h265parse";
+    }
+
+    std::ostringstream ss;
+    ss << "filesrc location=" << path
+       << " ! qtdemux"
+       << " ! " << codec_parse
+       << " ! nvv4l2decoder"
+       << " ! nvvidconv"
+       << " ! video/x-raw,format=BGRx"
+       << " ! videoconvert"
+       << " ! video/x-raw,format=BGR"
+       << " ! appsink drop=false max-buffers=2";
+    return ss.str();
+}
 
 static void drawHUD(cv::Mat& frame, const Profiler& profiler,
                     float pre_ms, float trt_ms, int det_count)
@@ -129,8 +157,20 @@ void runCamera(TRTEngine& engine, YOLO26Decoder& decoder,
     cv::VideoCapture cap;
 
     if (!cfg.video_path.empty()) {
-        std::cout << "Opening video file: " << cfg.video_path << std::endl;
-        cap.open(cfg.video_path);
+        // Try NVDEC hardware decode first (eliminates ~3-4ms CPU decode)
+        std::string nvdec = buildVideoNVDECPipeline(cfg.video_path);
+        std::cout << "Opening video (NVDEC): " << cfg.video_path << std::endl;
+        cap.open(nvdec, cv::CAP_GSTREAMER);
+
+        if (!cap.isOpened()) {
+            // Fallback: software decode (always works, ~130 FPS on 720p H.264)
+            std::cout << "NVDEC unavailable, falling back to software decode..."
+                      << std::endl;
+            cap.open(cfg.video_path);
+        } else {
+            std::cout << "NVDEC hardware decode active." << std::endl;
+        }
+
         if (!cap.isOpened())
             throw std::runtime_error("Failed to open video: " + cfg.video_path);
 

@@ -296,7 +296,7 @@ def convert(args):
     yaml_path.write_text(yaml_content)
 
     # Summary report
-    print(f"   Conversion complete")
+    print(f"\n✅ Conversion complete")
     print(f"   Images converted  : {converted}")
     print(f"   Total boxes       : {total_boxes}")
     print(f"   Skipped (class)   : {skipped_class}")

@@ -1,0 +1,28 @@
+# EdgeDrive-Perception — Training Requirements
+# Install with: pip install -r requirements.txt
+#
+# Tested on:
+#   Python     3.12
+#   CUDA       12.8
+#   GPU        Tesla T4 (Google Colab)
+
+# ── Deep learning framework ───────────────────────────────────────────────────
+torch>=2.0.0
+torchvision>=0.15.0
+
+# ── YOLO models and training ──────────────────────────────────────────────────
+ultralytics>=8.4.0          # YOLO26, YOLOv8, Solutions API
+
+# ── nuScenes dataset ──────────────────────────────────────────────────────────
+nuscenes-devkit>=1.1.11     # dataset loading, calibration, visualization
+
+# ── Geometry and math ─────────────────────────────────────────────────────────
+numpy>=1.24.0
+scipy>=1.10.0               # ConvexHull for segmentation label generation
+pyquaternion>=0.9.9         # 3D rotation for coordinate transforms
+
+# ── Image processing ──────────────────────────────────────────────────────────
+opencv-python>=4.8.0
+
+# ── Visualization ─────────────────────────────────────────────────────────────
+matplotlib>=3.7.0

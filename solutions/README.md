@@ -52,9 +52,19 @@ sequence. Spikes correspond to frames with high object density
 
 ### Speed Estimation
 Calibrated using nuScenes camera intrinsics (fx=1266.4px).
-Only accurate when ego vehicle is near-stationary (traffic light stop).
+`meter_per_pixel=0.0040` calibrated for objects at ~5m depth.
 
-![Speed Estimation](../demo/screenshots/solutions/speed.jpg)
+**Stationary camera (ego stopped at traffic light) — accurate:**
+
+![Speed Stationary](../demo/screenshots/solutions/speed_stationary.jpg)
+
+**Moving camera (ego driving) — inaccurate, ego motion included:**
+
+![Speed Moving](../demo/screenshots/solutions/speed_moving.jpg)
+
+This side-by-side demonstrates why Camera-LiDAR fusion is needed for
+accurate speed estimation on a moving platform. See the
+[Known Limitation](#speed-estimation--known-limitation) section below.
 
 ---
 

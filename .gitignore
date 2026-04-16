@@ -1,0 +1,38 @@
+# Data - never commit nuScenes dataset
+data/
+*.bag
+
+# Model weights - too large for git (use Git LFS or Drive)
+*.pt
+*.pth
+*.onnx
+*.engine
+*.trt
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+*.egg-info/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Build artifacts
+build/
+*.o
+*.a
+*.so
+
+# Benchmark outputs
+benchmarks/results/*.csv
+benchmarks/power_log/*.log
+benchmarks/thermal_log/*.log
+
+# Demo videos (too large)
+demo/*.mp4
+
+# OS
+.DS_Store
+Thumbs.db

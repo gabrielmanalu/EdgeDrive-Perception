@@ -123,7 +123,7 @@ def ego_to_global(box_xyz, box_yaw, ego_pose):
 # ── Single-frame inference ────────────────────────────────────────────────────
 
 def run_single_inference(model, nusc, nuscenes_root,
-                         sample_idx=0, score_thresh=SCORE_THRESH_INFERENCE):
+                         sample_idx=1, score_thresh=SCORE_THRESH_INFERENCE):
     """
     Run PointPillars on a single nuScenes LiDAR frame.
 
@@ -363,7 +363,7 @@ def parse_args():
     parser.add_argument('--checkpoint',
                         default='./pointpillars_weights/pointpillars_nuscenes.pth')
     parser.add_argument('--output_dir',    default='./pointpillars_outputs')
-    parser.add_argument('--sample_idx',    type=int, default=0,
+    parser.add_argument('--sample_idx',    type=int, default=1,
                         help='Sample index for single mode')
     parser.add_argument('--score_thresh',  type=float, default=0.3)
     parser.add_argument('--device',        default='cuda:0')

@@ -39,7 +39,7 @@ Three visualization modes are provided in `bev_visualization.py`:
 Fast inspection of PointPillars output. Rotated 3D boxes projected
 top-down with class labels and confidence scores.
 
-![Basic BEV](../demo/screenshots/fusion/bev_detections.jpg)
+![Basic BEV](../demo/screenshots/fusion/bev_detections.png)
 
 ---
 
@@ -50,7 +50,7 @@ Right: semantic 3D boxes extracted by PointPillars.
 
 > *"Left is what the LiDAR sees. Right is what PointPillars understands."*
 
-![Point Cloud vs Detections](../demo/screenshots/fusion/pointcloud_vs_detections.jpg)
+![Point Cloud vs Detections](../demo/screenshots/fusion/pointcloud_vs_detections.png)
 
 ---
 
@@ -59,7 +59,7 @@ Right: semantic 3D boxes extracted by PointPillars.
 Most visually impressive output. LiDAR points as background,
 3D boxes with heading lines, range rings, and forward direction arrow.
 
-![Combined BEV](../demo/screenshots/fusion/bev_with_pointcloud.jpg)
+![Combined BEV](../demo/screenshots/fusion/bev_with_pointcloud.png)
 
 **Key elements:**
 - **Colored points** — height-coded LiDAR scan (plasma colormap)

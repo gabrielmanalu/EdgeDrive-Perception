@@ -227,7 +227,8 @@ def plot_detections_bev(boxes_np, scores_np, labels_np,
                     if any(CLASS_NAMES[li] == n for li in l)]
     ax.legend(handles=legend_items, loc='upper right',
               facecolor='black', labelcolor='white', fontsize=8)
-
+    
+    fig.patch.set_facecolor('black')
     plt.tight_layout()
     plt.savefig(save_path, dpi=150, bbox_inches='tight', facecolor='black')
     plt.show()

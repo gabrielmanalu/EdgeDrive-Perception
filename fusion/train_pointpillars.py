@@ -239,7 +239,7 @@ def run_inference_test(model, nuscenes_root):
 
     nusc       = NuScenes(version='v1.0-mini',
                           dataroot=nuscenes_root, verbose=False)
-    sample     = nusc.sample[0]
+    sample     = nusc.sample[1]
     lidar_data = nusc.get('sample_data', sample['data']['LIDAR_TOP'])
     lidar_path = os.path.join(nuscenes_root, lidar_data['filename'])
 

@@ -222,28 +222,28 @@ detections in Bird's Eye View space using class-aware distance matching.
 ### Architecture
 
 ```
-┌─────────────────────────────────────────────────────┐
+┌──────────────────────────────────────────────────────┐
 │                 Late Fusion Pipeline                 │
-├───────────────────────┬─────────────────────────────┤
+├───────────────────────┬──────────────────────────────┤
 │  YOLO26n (Camera)     │  PointPillars (LiDAR)        │
 │  2D bboxes            │  3D boxes in LiDAR frame     │
 │  ↓ ground plane proj  │  ↓ lidar_to_ego transform    │
 │  BEV (x, y) in ego    │  BEV (x, y) in ego frame     │
-├───────────────────────┴─────────────────────────────┤
+├───────────────────────┴──────────────────────────────┤
 │  Preprocessing                                       │
 │  · Deduplicate LiDAR (PointPillars double-detects)   │
 │  · Filter rear detections (outside camera FOV)       │
-├─────────────────────────────────────────────────────┤
+├──────────────────────────────────────────────────────┤
 │  Class-aware optimal matching                        │
 │  · Build all valid pairs within 12m threshold        │
 │  · Add +5m penalty for cross-class matches           │
 │  · Greedy assign by penalized distance               │
-├─────────────────────────────────────────────────────┤
+├──────────────────────────────────────────────────────┤
 │  Output: fused detections                            │
 │  · Position: LiDAR (direct depth measurement)        │
-│  · Score: 0.6 × LiDAR + 0.4 × camera                │
+│  · Score: 0.6 × LiDAR + 0.4 × camera                 │
 │  · Unmatched: kept as single-modality detections     │
-└─────────────────────────────────────────────────────┘
+└──────────────────────────────────────────────────────┘
 ```
 
 ### Fusion Results (nuScenes Mini, sample[1])
@@ -253,7 +253,7 @@ detections in Bird's Eye View space using class-aware distance matching.
 Color coding: **Blue** = LiDAR only | **Green** = Camera only | **Red** = Fused
 
 ```
-Camera detections  (≤60m) : 17
+Camera detections  (≤60m)  : 17
 LiDAR detections   (front) : 18  (deduplicated from 26)
 ──────────────────────────────
 Fused matches              : 13

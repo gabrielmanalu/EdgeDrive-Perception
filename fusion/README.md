@@ -59,7 +59,7 @@ Right: semantic 3D boxes extracted by PointPillars.
 Most visually impressive output. LiDAR points as background,
 3D boxes with heading lines, range rings, and forward direction arrow.
 
-![Combined BEV](../demo/screenshots/fusion/bev_with_pointcloud.jpg)
+![Combined BEV](../demo/screenshots/fusion/bev_with_pointcloud.png)
 
 **Key elements:**
 - **Colored points** — height-coded LiDAR scan (plasma colormap)

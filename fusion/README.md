@@ -59,14 +59,14 @@ Right: semantic 3D boxes extracted by PointPillars.
 Most visually impressive output. LiDAR points as background,
 3D boxes with heading lines, range rings, and forward direction arrow.
 
-![Combined BEV](../demo/screenshots/fusion/bev_with_pointcloud.png)
+![Combined BEV](../demo/screenshots/fusion/bev_with_pointcloud.jpg)
 
 **Key elements:**
 - **Colored points** — height-coded LiDAR scan (plasma colormap)
 - **Range rings** — 10/20/30/40/50m distance markers
 - **Rotated boxes** — correct heading angles per object
-- **Heading lines** — small line from center to front edge of each box
-- **Forward arrow** — ego vehicle driving direction (Y axis)
+- **Heading lines** — front edge indicator showing object orientation
+- **Forward arrow** — ego vehicle driving direction
 - **EGO rectangle** — ego vehicle at origin
 
 ---
@@ -74,17 +74,17 @@ Most visually impressive output. LiDAR points as background,
 ### Detection Results (nuScenes Mini, Single Frame)
 
 ```
-Sample: scene-0061, first keyframe
+Sample: nusc.sample[1], CAM_FRONT keyframe
 Score threshold: 0.3
 
 Detected objects:
-  car                       3
-  bus                       1
-  bicycle                   4
-  traffic_cone              13
-  trailer                   1
+  car                        5
+  bus                        1
+  pedestrian                 2
+  barrier                   20
+  truck                      1
 
-Total: 24 detections above 0.3 threshold
+Total: 29 detections above 0.3 threshold
 ```
 
 ---
@@ -93,8 +93,8 @@ Total: 24 detections above 0.3 threshold
 
 nuScenes Mini does **not** include LiDAR sweep data (0 previous sweeps
 per sample). PointPillars was trained with 10 fused sweeps, so local
-evaluation on Mini produces near-zero mAP. Published numbers from the
-MMDetection3D model zoo are used for reporting:
+evaluation on Mini produces near-zero mAP (~0.0002). Published numbers
+from the MMDetection3D model zoo are used for reporting:
 
 | Metric | Value | Dataset |
 |---|---|---|
@@ -121,19 +121,22 @@ Source: [MMDetection3D Model Zoo](https://github.com/open-mmlab/mmdetection3d/tr
 
 ### Coordinate Transform
 
-MMDetection3D outputs boxes in the **ego vehicle frame** (origin = ego).
-nuScenes evaluation requires boxes in the **global frame** (origin = map).
+MMDetection3D outputs boxes in the **LiDAR sensor frame**.
+nuScenes evaluation expects boxes in the **global frame**.
+Camera BEV projection outputs in the **ego vehicle frame**.
+All must be unified before fusion or evaluation.
 
 ```
-Ego frame → Global frame:
+LiDAR sensor frame → Ego frame:
+  point_ego = R_lidar2ego @ point_lidar + t_lidar2ego
 
-pos_global = ego_rotation.rotate(pos_ego) + ego_translation
-yaw_global = yaw_ego + ego_rotation.yaw_pitch_roll[0]
-rot_quat   = Quaternion(axis=[0,0,1], angle=yaw_global)
+Ego frame → Global frame (for nuScenes eval):
+  pos_global = ego_rotation.rotate(pos_ego) + ego_translation
+  yaw_global = yaw_ego + ego_rotation.yaw_pitch_roll[0]
 ```
 
-A simplified yaw-only rotation (atan2 from quaternion components)
-was tried first but produced incorrect global positions. Full quaternion
+A simplified yaw-only rotation (atan2 from quaternion) was tried
+first but produced incorrect global positions. Full quaternion
 rotation via pyquaternion is required for correct results.
 
 ---
@@ -214,26 +217,123 @@ python bev_visualization.py \
 ## Camera-LiDAR Late Fusion
 
 Fuses YOLO26n 2D camera detections with PointPillars 3D LiDAR
-detections in Bird's Eye View space:
+detections in Bird's Eye View space using class-aware distance matching.
+
+### Architecture
 
 ```
-┌─────────────────────────────────────────────────┐
-│              Late Fusion Module                  │
-├──────────────────┬──────────────────────────────┤
-│  YOLO26n Camera  │  PointPillars LiDAR           │
-│  2D boxes        │  3D boxes (already in BEV)    │
-│  ↓ project to BEV│                              │
-│  (camera calib)  │                              │
-├──────────────────┴──────────────────────────────┤
-│  Distance-based matching in BEV                 │
-│  → Fused detections, combined confidence        │
-├─────────────────────────────────────────────────┤
-│  BEV Visualization                              │
-│  Blue=LiDAR | Green=Camera | Red=Fused         │
-└─────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────┐
+│                 Late Fusion Pipeline                 │
+├───────────────────────┬─────────────────────────────┤
+│  YOLO26n (Camera)     │  PointPillars (LiDAR)        │
+│  2D bboxes            │  3D boxes in LiDAR frame     │
+│  ↓ ground plane proj  │  ↓ lidar_to_ego transform    │
+│  BEV (x, y) in ego    │  BEV (x, y) in ego frame     │
+├───────────────────────┴─────────────────────────────┤
+│  Preprocessing                                       │
+│  · Deduplicate LiDAR (PointPillars double-detects)   │
+│  · Filter rear detections (outside camera FOV)       │
+├─────────────────────────────────────────────────────┤
+│  Class-aware optimal matching                        │
+│  · Build all valid pairs within 12m threshold        │
+│  · Add +5m penalty for cross-class matches           │
+│  · Greedy assign by penalized distance               │
+├─────────────────────────────────────────────────────┤
+│  Output: fused detections                            │
+│  · Position: LiDAR (direct depth measurement)        │
+│  · Score: 0.6 × LiDAR + 0.4 × camera                │
+│  · Unmatched: kept as single-modality detections     │
+└─────────────────────────────────────────────────────┘
 ```
 
-Files: `camera_to_bev.py`, `late_fusion.py`, `fusion_evaluation.py`
+### Fusion Results (nuScenes Mini, sample[1])
+
+![Fusion BEV](../demo/screenshots/fusion/fusion_bev_final.png)
+
+Color coding: **Blue** = LiDAR only | **Green** = Camera only | **Red** = Fused
+
+```
+Camera detections  (≤60m) : 17
+LiDAR detections   (front) : 18  (deduplicated from 26)
+──────────────────────────────
+Fused matches              : 13
+LiDAR-only                 :  5
+Camera-only                :  4
+──────────────────────────────
+Match threshold            : 12.0m
+Class penalty (cross-class): +5.0m
+```
+
+### Why 12m Match Threshold
+
+Standard late fusion uses 2-3m matching distance. We use 12m because
+nuScenes Mini has 0 LiDAR sweeps — PointPillars was trained with 10
+fused sweeps and shows ~5-10m position uncertainty on single frames.
+With full 10-sweep PointPillars, threshold reduces to 3-4m.
+
+### Known Limitations
+
+**Ground plane assumption (camera BEV):**
+Camera BEV projection assumes all objects sit on a flat ground plane
+(z=0). This fails for objects partially occluded at the base (cars
+behind barriers) or very distant objects (>50m), producing large
+y-axis errors. These appear as camera-only detections even when
+LiDAR sees the object at the correct position.
+
+**Single-sweep LiDAR position uncertainty:**
+PointPillars trained with 10 sweeps but nuScenes Mini provides only
+1 sweep. This degrades position accuracy by ~5-10m per detection,
+requiring the large 12m match threshold.
+
+**No temporal tracking:**
+Each frame is matched independently. A multi-object tracker (e.g.
+Kalman filter) would maintain object IDs across frames and use
+predicted positions for matching, significantly improving accuracy.
+
+**Class label disagreement:**
+Camera and LiDAR may classify the same object differently (e.g.
+camera sees "truck" by appearance, LiDAR sees "bus" by 3D dimensions).
+Handled by `classes_compatible()` which groups semantically similar
+classes, with a +5m penalty to prefer same-class matches.
+
+### Why Late Fusion Over BEVFusion
+
+BEVFusion (unified camera-LiDAR neural network) achieves higher mAP
+but requires ~200MB model size and runs at ~5 FPS on Jetson Orin Nano
+(40 TOPS). NVIDIA CUDA-BEVFusion targets Jetson AGX Orin (275 TOPS).
+
+Late fusion is the right choice for our platform:
+- Runs at 30+ FPS on Jetson Orin Nano under 10W
+- Each modality can fail independently without breaking the other
+- Directly mirrors what Tier IV's edge-auto pipeline does
+- Explainable and debuggable — failure modes are clearly identified
+
+BEVFusion is documented as future work for higher-compute platforms.
+
+### C++ Deployment
+
+This Python implementation is the reference for the C++ port in
+`deployment/src/`. The math is identical — the C++ version integrates
+with the TensorRT inference pipeline for real-time operation on Jetson.
+
+### Setup & Usage
+
+```bash
+# Dependencies (same as training/)
+pip install ultralytics nuscenes-devkit pyquaternion numpy matplotlib
+
+# Camera BEV projection
+python camera_to_bev.py \
+    --nuscenes_root /data/sets/nuscenes \
+    --weights ./pointpillars_weights/yolo26n_best.pt \
+    --sample_idx 1
+
+# Full fusion pipeline (requires PointPillars detections)
+# See development_walkthrough.ipynb for complete pipeline
+python late_fusion.py \
+    --nuscenes_root /data/sets/nuscenes \
+    --sample_idx 1
+```
 
 ---
 
@@ -243,7 +343,7 @@ Files: `camera_to_bev.py`, `late_fusion.py`, `fusion_evaluation.py`
 |---|---|
 | `train_pointpillars.py` | MMDet3D setup, weight download, dataset prep |
 | `pointpillars_inference.py` | Inference + nuScenes evaluation pipeline |
-| `bev_visualization.py` | Three BEV visualization modes |
+| `bev_visualization.py` | Three PointPillars BEV visualization modes |
 | `camera_to_bev.py` | Project YOLO26n 2D detections into BEV space |
-| `late_fusion.py` | Distance-based Camera-LiDAR fusion in BEV |
-| `fusion_evaluation.py` | Fusion vs single-modal comparison metrics |
+| `late_fusion.py` | Class-aware Camera-LiDAR late fusion in BEV |
+| `fusion_evaluation.py` | Camera vs LiDAR vs fused metrics comparison |

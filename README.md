@@ -1,6 +1,6 @@
 # EdgeDrive Perception
 
-Edge AI perception pipeline for real-time autonomous driving on Jetson Orin Nano.
+Edge AI perception pipeline for real-time autonomous driving on Jetson Orin Nano Super.
 
 Covers the full pipeline from dataset preparation to edge deployment:
 camera detection, LiDAR 3D detection, sensor fusion, quantization,
@@ -48,7 +48,7 @@ nuScenes Mini. Blue = LiDAR only | Green = Camera only | Red = Fused.
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │                     EdgeDrive Perception                         │
-├───────────────────────────┬──────────────────────────────────────┤
+├────────────────────────────┬─────────────────────────────────────┤
 │  Camera Pipeline           │  LiDAR Pipeline                     │
 │                            │                                     │
 │  nuScenes CAM_FRONT        │  nuScenes LIDAR_TOP                 │
@@ -58,7 +58,7 @@ nuScenes Mini. Blue = LiDAR only | Green = Camera only | Red = Fused.
 │       ↓                    │       ↓                             │
 │  Ground plane → BEV (x,y)  │  LiDAR→Ego transform                │
 │                            │                                     │
-├───────────────────────────┴──────────────────────────────────────┤
+├────────────────────────────┴─────────────────────────────────────┤
 │                    Late Fusion in BEV                            │
 │         Class-aware distance matching (12m threshold)            │
 │         Fused score: 0.6 × LiDAR + 0.4 × Camera                  │
@@ -66,7 +66,7 @@ nuScenes Mini. Blue = LiDAR only | Green = Camera only | Red = Fused.
 │                 Quantization & Export                            │
 │   PTQ FP32→FP16→INT8  |  QAT  |  ONNX  |  TFLite  |  TensorRT    │
 ├──────────────────────────────────────────────────────────────────┤
-│              Jetson Orin Nano Deployment  (in progress)          │
+│        Jetson Orin Nano Super Deployment  (in progress)          │
 │         C++ TensorRT  |  30+ FPS  |  <10W  |  Live Camera        │
 └──────────────────────────────────────────────────────────────────┘
 ```
@@ -141,17 +141,17 @@ Solutions API, validated on nuScenes driving video:
 | Speed Estimation | Per-object velocity (stationary camera only) |
 | Segmentation | Instance masks using YOLO26n-seg |
 
-See [`solutions/README.md`](solutions/README.md) for demo videos.
+See [`solutions/README.md`](solutions/README.md) for demos.
 
-### Jetson Orin Nano Benchmarks
+### Jetson Orin Nano Super Benchmarks
 
-Planned deployment on Jetson Orin Nano:
+Planned deployment on Jetson Orin Nano Super:
 
 - TensorRT INT8 inference
 - Real-time pipeline (target: 30+ FPS, <10W)
 - Power and thermal benchmarking
 
-Results to be updated after Jetson Orin Nano deployment
+Results to be updated after Jetson Orin Nano Super deployment
 
 ---
 
@@ -159,7 +159,7 @@ Results to be updated after Jetson Orin Nano deployment
 
 | Component | Spec | Cost |
 |---|---|---|
-| Edge compute | Jetson Orin Nano 8GB Developer Kit | ~$250 |
+| Edge compute | Jetson Orin Nano Super 8GB Developer Kit | ~$250 |
 | Camera | USB webcam (1080p) | ~$10 |
 | Total | | **~$260** |
 
@@ -290,7 +290,7 @@ latency variance — critical for real-time autonomous driving.
 
 **Late fusion over BEVFusion:**
 BEVFusion (unified camera-LiDAR network) achieves higher mAP but
-requires ~200MB model and runs at ~5 FPS on Jetson Orin Nano (40 TOPS).
+requires ~200MB model and runs at ~5 FPS on Jetson Orin Nano Super 8GB (67 TOPS).
 Late fusion runs at 30+ FPS under 10W while keeping each modality
 independently debuggable — the correct tradeoff for edge deployment.
 
@@ -308,6 +308,6 @@ End-to-end autonomous driving perception stack built to demonstrate
 edge AI engineering capability — from dataset preparation and model
 training through quantization, sensor fusion, and Jetson deployment.
 
-Developed on a ~$260 hardware budget (Jetson Orin Nano 8GB + USB webcam)
+Developed on a ~$260 hardware budget (Jetson Orin Nano Super 8GB + USB webcam)
 using Google Colab for training. All code written from scratch on nuScenes,
 the same dataset used in real industry Co-MLOps research pipeline.

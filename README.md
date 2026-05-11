@@ -66,8 +66,8 @@ nuScenes Mini. Blue = LiDAR only | Green = Camera only | Red = Fused.
 │                 Quantization & Export                            │
 │   PTQ FP32→FP16→INT8  |  QAT  |  ONNX  |  TFLite  |  TensorRT    │
 ├──────────────────────────────────────────────────────────────────┤
-│        Jetson Orin Nano Super Deployment  (in progress)          │
-│         C++ TensorRT  |  30+ FPS  |  <10W  |  Live Camera        │
+│              Jetson Orin Nano Super Deployment                   │
+│      C++ TensorRT  |  72 FPS INT8  |  ~6.6W  |  Live Camera      │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -123,7 +123,9 @@ Fusion is performed on single-frame detections without temporal tracking.
 Class-aware nearest-neighbor matching is performed in BEV (12m threshold).
 Fused confidence:
 
+```
 Score = 0.6 × LiDAR + 0.4 × Camera
+```
 
 LiDAR is weighted higher due to more reliable spatial localization,
 while camera contributes semantic confidence.
@@ -145,13 +147,46 @@ See [`solutions/README.md`](solutions/README.md) for demos.
 
 ### Jetson Orin Nano Super Benchmarks
 
-Planned deployment on Jetson Orin Nano Super:
+**Hardware:** Jetson Orin Nano Super 8GB (67 TOPS) | JetPack R36.4.7 | CUDA 12.6 | TensorRT 10.3.0
 
-- TensorRT INT8 inference
-- Real-time pipeline (target: 30+ FPS, <10W)
-- Power and thermal benchmarking
+#### Inference Speed — Single Image (pure inference, no I/O overhead)
 
-Results to be updated after Jetson Orin Nano Super deployment
+| Format | Mean | FPS | Min | Max | P99 | Engine Size |
+|---|---|---|---|---|---|---|
+| PyTorch FP32 | 32.2ms | 31.1 | — | — | — | 5.1 MB |
+| TensorRT FP16 | 17.8ms | **56.3** | 12.2ms | 26.4ms | 26.0ms | 8.0 MB |
+| TensorRT INT8 | 13.9ms | **72.0** | 9.8ms | 17.7ms | 17.7ms | 5.4 MB |
+
+FP32 → INT8 speedup: **+131%** (31 → 72 FPS). All formats exceed 30 FPS target.
+
+#### Inference Speed — 404 nuScenes Images (real-world workload, includes I/O)
+
+| Format | FPS | Notes |
+|---|---|---|
+| PyTorch FP32 | ~20 FPS | CPU bottleneck (Python GIL) |
+| TensorRT FP16 | 27.3 FPS | Python I/O overhead |
+| TensorRT INT8 | 28.9 FPS | Python I/O overhead |
+| C++ TensorRT INT8 | TBD | Target: 100+ FPS (no Python overhead) |
+
+#### Power & Thermal (TensorRT INT8, 404 nuScenes images, 60s run)
+
+| Metric | Value |
+|---|---|
+| Total board power (VDD_IN) | ~6.6W average |
+| CPU+GPU power (VDD_CPU_GPU_CV) | ~0.88W |
+| SOC power (VDD_SOC) | ~1.61W |
+| GPU temperature | ~50.5°C (stable, no throttling) |
+| GPU utilization | 27-65% (Python I/O bound) |
+
+All measurements taken with `tegrastats --interval 1000` during live inference.
+GPU utilization expected to reach 80-99% in C++ pipeline (no Python overhead).
+
+#### TensorRT Export Notes
+
+- FP16 build time: ~529s (normal for first-time layer optimization)
+- INT8 build time: ~428s (includes calibration on 81 nuScenes val images)
+- Known warning: TensorRT 10.3.0 on JetPack 6 with INT8 disables end2end branch — handled automatically by Ultralytics, no impact on accuracy
+- `NvMapMemAllocInternalTagged` errors: harmless on Jetson unified memory architecture
 
 ---
 
@@ -196,12 +231,23 @@ EdgeDrive-Perception/
 │   ├── late_fusion.py
 │   ├── fusion_evaluation.py
 │   └── README.md
-├── deployment/            ← Jetson TensorRT C++ pipeline (to be completed)
+├── deployment/            ← Jetson TensorRT C++ pipeline
+│   ├── CMakeLists.txt
+│   ├── Dockerfile
+│   ├── docker-compose.yml
+│   ├── README.md
 │   └── src/
+│       ├── main.cpp
+│       ├── trt_engine.cpp
+│       ├── yolo26_decoder.cpp
+│       ├── camera_capture.cpp
+│       ├── profiler.cpp
+│       └── ...
 ├── notebooks/
 │   └── development_walkthrough.ipynb
-├── docs/
-└── benchmarks/
+├── benchmarks/
+│   └── results/
+└── docs/
 ```
 
 ---
@@ -250,6 +296,24 @@ python camera_to_bev.py --nuscenes_root /data/sets/nuscenes --sample_idx 1
 python training/quantize.py --mode ptq --runs_dir ./runs
 ```
 
+### 6. Jetson Deployment
+
+```bash
+# Export TensorRT engines on Jetson (must build on target hardware)
+python3 -c "
+from ultralytics import YOLO
+model = YOLO('weights/yolo26n_det.pt')
+model.export(format='engine', device=0, half=True)   # FP16
+model.export(format='engine', device=0, int8=True,
+             data='calibration.yaml')                  # INT8
+"
+
+# C++ pipeline (see deployment/README.md)
+cd deployment && mkdir build && cd build
+cmake .. && make -j4
+./edgedrive --model ../weights/yolo26n_det_int8.engine --camera 0
+```
+
 ---
 
 ## Pre-trained Weights
@@ -272,7 +336,7 @@ design decisions, and intermediate results is documented in:
 
 Key decisions documented:
 - Why YOLO26n over YOLOv8n for edge deployment
-- coordinate transform bugs (global→ego→camera)
+- Coordinate transform bugs (global→ego→camera)
 - Sample-level vs scene-level dataset split
 - Single-sweep LiDAR limitation on nuScenes Mini
 - Greedy matching failures in late fusion and fixes
@@ -290,15 +354,23 @@ latency variance — critical for real-time autonomous driving.
 
 **Late fusion over BEVFusion:**
 BEVFusion (unified camera-LiDAR network) achieves higher mAP but
-requires ~200MB model and runs at ~5 FPS on Jetson Orin Nano Super 8GB (67 TOPS).
-Late fusion runs at 30+ FPS under 10W while keeping each modality
-independently debuggable — the correct tradeoff for edge deployment.
+requires ~200MB model and runs at ~5 FPS on Jetson Orin Nano Super (67 TOPS).
+Late fusion is implemented and validated on nuScenes data (Colab).
+The C++ port for real-time Jetson deployment is in progress under
+`deployment/src/late_fusion.cpp`, keeping each modality independently
+debuggable — the correct tradeoff for edge deployment.
 
 **PTQ over QAT:**
 QAT showed no improvement over PTQ for YOLO26n (early stopping at
 epoch 1). YOLO26n's anchor-free architecture is inherently
 quantization-robust, making the expensive QAT fine-tuning loop
 unnecessary.
+
+**TFLite (Colab) vs TensorRT (Jetson):**
+Colab quantization uses TFLite to prove accuracy retention (INT8 +0.45%
+over FP32). Jetson deployment uses TensorRT for NVIDIA GPU-specific
+optimization. Both formats are evaluated independently — TFLite proves
+quantization correctness, TensorRT proves real-time performance.
 
 ---
 
@@ -310,4 +382,4 @@ training through quantization, sensor fusion, and Jetson deployment.
 
 Developed on a ~$260 hardware budget (Jetson Orin Nano Super 8GB + USB webcam)
 using Google Colab for training. All code written from scratch on nuScenes,
-the same dataset used in real industry Co-MLOps research pipeline.
+the same dataset used in real industry Co-MLOps autonomous driving research.

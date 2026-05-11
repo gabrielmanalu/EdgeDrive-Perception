@@ -87,7 +87,7 @@ YOLO26n chosen for Jetson deployment despite lower FP32 mAP because
 its NMS-free head eliminates post-processing latency and shows superior
 quantization robustness (INT8 improves over FP32).
 
-### Quantization Results (YOLO26n-det)
+### Quantization Results (YOLO26n-det, Colab TFLite)
 
 | Format | mAP50 | vs FP32 | Size |
 |---|---|---|---|
@@ -97,7 +97,7 @@ quantization robustness (INT8 improves over FP32).
 | INT8 QAT | 0.5700 | +0.0032 | 2.7 MB |
 
 INT8 PTQ improves over FP32, suggesting quantization acts as a
-regularizer on the small dataset. QAT showed no further improvement, 
+regularizer on the small dataset. QAT showed no further improvement,
 confirming PTQ is sufficient for this architecture.
 
 ### PointPillars (published, full nuScenes val)
@@ -149,37 +149,44 @@ See [`solutions/README.md`](solutions/README.md) for demos.
 
 **Hardware:** Jetson Orin Nano Super 8GB (67 TOPS) | JetPack R36.4.7 | CUDA 12.6 | TensorRT 10.3.0
 
-#### Inference Speed — Single Image (pure inference, no I/O overhead)
+#### Inference Speed — Single Image (GPU warm cache, 5s run)
 
-| Format | Mean | FPS | Min | Max | P99 | Engine Size |
-|---|---|---|---|---|---|---|
-| PyTorch FP32 | 32.2ms | 31.1 | — | — | — | 5.1 MB |
-| TensorRT FP16 | 17.8ms | **56.3** | 12.2ms | 26.4ms | 26.0ms | 8.0 MB |
-| TensorRT INT8 | 13.9ms | **72.0** | 9.8ms | 17.7ms | 17.7ms | 5.4 MB |
+| Format | FPS | Infer mean | P99 | Engine Size |
+|---|---|---|---|---|
+| PyTorch FP32 | 31.1 | 32.2ms | — | 5.1 MB |
+| TensorRT FP16 (Python) | 56.3 | 17.8ms | 26.0ms | 8.0 MB |
+| TensorRT INT8 (Python) | 72.0 | 13.9ms | 17.7ms | 5.4 MB |
+| C++ TensorRT INT8 | 84.4 | 10.5ms | 15.8ms | 5.4 MB |
 
-FP32 → INT8 speedup: **+131%** (31 → 72 FPS). All formats exceed 30 FPS target.
+FP32 → C++ INT8 speedup: **+171%** (31 → 84 FPS).
 
-#### Inference Speed — 404 nuScenes Images (real-world workload, includes I/O)
+Note: single image is slower than 404-image test in C++ because GPU clocks down
+(~305 MHz idle) between frames without sustained load. 404-image test keeps GPU
+at sustained ~600-1000 MHz, which is closer to real deployment behavior.
 
-| Format | FPS | Notes |
+#### Inference Speed — 404 nuScenes Images, RAM preloaded, 60s run
+
+| Format | FPS | Infer mean | P99 | Notes |
+|---|---|---|---|---|
+| PyTorch FP32 | ~20 FPS | 32.2ms | — | CPU bottleneck (Python GIL) |
+| TensorRT FP16 (Python) | 27.3 FPS | 17.8ms | 26.0ms | Python I/O overhead |
+| TensorRT INT8 (Python) | 28.9 FPS | 13.9ms | 17.7ms | Python I/O overhead |
+| **C++ TensorRT INT8** | **113.6 FPS** | **9.0ms** | **15.8ms** | No Python overhead ✅ |
+
+Python → C++ improvement: **+293% FPS** (28.9 → 113.6), **-35% latency** (13.9ms → 9.0ms).
+
+#### Power & Thermal
+
+| Metric | Python TRT INT8 | C++ TRT INT8 |
 |---|---|---|
-| PyTorch FP32 | ~20 FPS | CPU bottleneck (Python GIL) |
-| TensorRT FP16 | 27.3 FPS | Python I/O overhead |
-| TensorRT INT8 | 28.9 FPS | Python I/O overhead |
-| C++ TensorRT INT8 | TBD | Target: 100+ FPS (no Python overhead) |
+| Total board power (VDD_IN) | ~6.6W | ~7.8W |
+| CPU+GPU power | ~0.88W | ~2.3W |
+| GPU temperature | ~50.5°C | ~57-58°C |
+| GPU utilization | 27-65% | 50-80% |
+| No thermal throttling | ✅ | ✅ |
 
-#### Power & Thermal (TensorRT INT8, 404 nuScenes images, 60s run)
-
-| Metric | Value |
-|---|---|
-| Total board power (VDD_IN) | ~6.6W average |
-| CPU+GPU power (VDD_CPU_GPU_CV) | ~0.88W |
-| SOC power (VDD_SOC) | ~1.61W |
-| GPU temperature | ~50.5°C (stable, no throttling) |
-| GPU utilization | 27-65% (Python I/O bound) |
-
-All measurements taken with `tegrastats --interval 1000` during live inference.
-GPU utilization expected to reach 80-99% in C++ pipeline (no Python overhead).
+C++ draws more power because GPU stays busier — less idle time between frames.
+All measurements via `tegrastats --interval 1000` during 60s live inference run.
 
 #### TensorRT Export Notes
 
@@ -236,13 +243,24 @@ EdgeDrive-Perception/
 │   ├── Dockerfile
 │   ├── docker-compose.yml
 │   ├── README.md
+│   ├── include/
+│   │   ├── trt_engine.hpp
+│   │   ├── yolo26_decoder.hpp
+│   │   └── profiler.hpp
 │   └── src/
 │       ├── main.cpp
 │       ├── trt_engine.cpp
 │       ├── yolo26_decoder.cpp
-│       ├── camera_capture.cpp
 │       ├── profiler.cpp
-│       └── ...
+│       ├── camera_capture.cpp
+│       ├── late_fusion.cpp
+│       ├── bev_visualizer.cpp
+│       ├── object_counter.cpp
+│       ├── speed_estimator.cpp
+│       ├── segmentation_decoder.cpp
+│       ├── heatmap_generator.cpp
+│       ├── pointpillars_decoder.cpp
+│       └── preprocessor.cu
 ├── notebooks/
 │   └── development_walkthrough.ipynb
 ├── benchmarks/

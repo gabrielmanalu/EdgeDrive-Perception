@@ -118,6 +118,7 @@ void runBenchmark(TRTEngine& engine, YOLO26Decoder& decoder,
 
     std::cout << "Running for " << duration_s << " seconds..." << std::endl;
 
+    bool debug_done = false;
     while (true) {
         auto now = std::chrono::high_resolution_clock::now();
         float elapsed = std::chrono::duration<float>(now - t_start).count();
@@ -128,8 +129,21 @@ void runBenchmark(TRTEngine& engine, YOLO26Decoder& decoder,
         const cv::Mat& frame = images[frame_count % images.size()];
         float* output = engine.infer(frame);
 
+        // Print debug info on first frame only
+        // if (!debug_done) {
+        //     decoder.debugOutput(output, engine.outputSize());
+        //     debug_done = true;
+        // }
+
         auto dets = decoder.decode(
-            output, frame.cols, frame.rows);
+            output, engine.outputSize(), frame.cols, frame.rows);
+        
+        // Sanity Check
+        // if (frame_count == 0) { // Just save the very first frame
+        //     cv::Mat annotated = decoder.draw(frame, dets);
+        //     cv::imwrite("sanity_check_cpp.jpg", annotated);
+        //     std::cout << ">>> Saved sanity_check_cpp.jpg to disk! <<<" << std::endl;
+        // }
 
         profiler.frameEnd();
         profiler.addInferMs(engine.lastInferMs());
@@ -151,7 +165,7 @@ void runBenchmark(TRTEngine& engine, YOLO26Decoder& decoder,
     std::cout << "FPS (wall)    : " << frame_count / total_s << std::endl;
     std::cout << "Infer total   : " << profiler.meanInferMs()      << "ms  (preprocess + TRT)" << std::endl;
     std::cout << "  Preprocess  : " << profiler.meanPreprocessMs() << "ms" << std::endl;
-    std::cout << "  TRT only    : " << profiler.meanTRTMs()        << "ms" << std::endl;
+    std::cout << "  TRT only    : " << profiler.meanTRTMs()        << "ms  ← compare to Python" << std::endl;
     std::cout << "Infer P99     : " << profiler.p99InferMs()       << "ms" << std::endl;
     std::cout << "=========================" << std::endl;
 }
@@ -189,17 +203,7 @@ void runCamera(TRTEngine& engine, YOLO26Decoder& decoder,
 
         // Inference
         float* output = engine.infer(frame);
-        // auto   dets   = decoder.decode(output, frame.cols, frame.rows);
-
-        auto dets = decoder.decode(output, frame.cols, frame.rows);
-
-        // --- ADD THESE 4 LINES FOR A QUICK VISUAL SANITY CHECK ---
-        if (frame_count == 0) { // Just save the very first frame
-            cv::Mat annotated = decoder.draw(frame, dets);
-            cv::imwrite("sanity_check_cpp.jpg", annotated);
-            std::cout << ">>> Saved sanity_check_cpp.jpg to disk! <<<" << std::endl;
-        }
-        // ---------------------------------------------------------
+        auto   dets   = decoder.decode(output, engine.outputSize(), frame.cols, frame.rows);
 
         profiler.frameEnd();
         profiler.addInferMs(engine.lastInferMs());

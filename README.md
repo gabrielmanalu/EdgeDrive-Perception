@@ -67,7 +67,7 @@ nuScenes Mini. Blue = LiDAR only | Green = Camera only | Red = Fused.
 │   PTQ FP32→FP16→INT8  |  QAT  |  ONNX  |  TFLite  |  TensorRT    │
 ├──────────────────────────────────────────────────────────────────┤
 │              Jetson Orin Nano Super Deployment                   │
-│      C++ TensorRT  |  72 FPS INT8  |  ~6.6W  |  Live Camera      │
+│     C++ TensorRT  |  193 FPS INT8  |  ~12W  |  Live Camera       │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -148,52 +148,72 @@ See [`solutions/README.md`](solutions/README.md) for demos.
 ### Jetson Orin Nano Super Benchmarks
 
 **Hardware:** Jetson Orin Nano Super 8GB (67 TOPS) | JetPack R36.4.7 | CUDA 12.6 | TensorRT 10.3.0
+**Benchmark conditions:** `sudo jetson_clocks` (max clocks locked)
 
-#### Inference Speed — Single Image (GPU warm cache, 5s run)
+#### Full Pipeline Breakdown — 404 nuScenes Images, 60s run
 
-| Format | FPS | Infer mean | P99 | Engine Size |
-|---|---|---|---|---|
-| PyTorch FP32 | 31.1 | 32.2ms | — | 5.1 MB |
-| TensorRT FP16 (Python) | 56.3 | 17.8ms | 26.0ms | 8.0 MB |
-| TensorRT INT8 (Python) | 72.0 | 13.9ms | 17.7ms | 5.4 MB |
-| C++ TensorRT INT8 | 84.4 | 10.5ms | 15.8ms | 5.4 MB |
+| Format | FPS | Pre | TRT | Post | Total/frame | Engine |
+|---|---|---|---|---|---|---|
+| Python FP32 | 29.1 | 5.2ms | 27.6ms | 1.1ms | 34.0ms | 5.1 MB |
+| Python TRT FP16 | 87.6 | 5.6ms | 4.2ms | 1.2ms | 11.0ms | 8.0 MB |
+| Python TRT INT8 | 78.5 | 5.6ms | **3.5ms** | 3.2ms | 12.3ms | 5.4 MB |
+| **C++ TRT INT8** | **193.3** | **1.7ms** | **3.5ms** | — | **5.1ms** | 5.4 MB |
 
-FP32 → C++ INT8 speedup: **+171%** (31 → 84 FPS).
+#### Full Pipeline Breakdown — Single Image (20 iterations)
 
-Note: single image is slower than 404-image test in C++ because GPU clocks down
-(~305 MHz idle) between frames without sustained load. 404-image test keeps GPU
-at sustained ~600-1000 MHz, which is closer to real deployment behavior.
+| Format | FPS | Pre | TRT | Post | Total/frame |
+|---|---|---|---|---|---|
+| Python FP32 | 22.6 | 6.3ms | 28.7ms | 0.9ms | 35.9ms |
+| Python TRT FP16 | 50.3 | 6.7ms | 4.5ms | 1.3ms | 12.5ms |
+| Python TRT INT8 | 47.4 | 6.5ms | 3.7ms | 3.5ms | 13.7ms |
+| **C++ TRT INT8** | **193.0** | **1.7ms** | **3.4ms** | — | **5.1ms** |
 
-#### Inference Speed — 404 nuScenes Images, RAM preloaded, 60s run
+#### Key Observations
 
-| Format | FPS | Infer mean | P99 | Notes |
-|---|---|---|---|---|
-| PyTorch FP32 | ~20 FPS | 32.2ms | — | CPU bottleneck (Python GIL) |
-| TensorRT FP16 (Python) | 27.3 FPS | 17.8ms | 26.0ms | Python I/O overhead |
-| TensorRT INT8 (Python) | 28.9 FPS | 13.9ms | 17.7ms | Python I/O overhead |
-| **C++ TensorRT INT8** | **113.6 FPS** | **9.0ms** | **15.8ms** | No Python overhead ✅ |
+**C++ preprocessing is 3.3× faster than Python:**
+```
+Python preprocessing : 5.6ms (PIL/NumPy with GIL overhead)
+C++ preprocessing    : 1.7ms (OpenCV letterbox, pre-allocated Mats)
+```
 
-Python → C++ improvement: **+293% FPS** (28.9 → 113.6), **-35% latency** (13.9ms → 9.0ms).
+**TRT inference matches across both runtimes (same hardware, same engine):**
+```
+Python TRT INT8 : 3.5ms
+C++ TRT INT8    : 3.5ms ← identical, confirms correct implementation
+```
 
-#### Power & Thermal
+**Python INT8 is slower than FP16 despite faster TRT inference:**
+```
+Python FP16: TRT 4.2ms + postprocess 1.2ms = 5.4ms GPU work → 87.6 FPS
+Python INT8: TRT 3.5ms + postprocess 3.2ms = 6.7ms GPU work → 78.5 FPS
+INT8 postprocessing is 2.7× slower than FP16 due to Ultralytics
+output tensor layout differences — not a model issue, a runtime issue.
+C++ decoder handles INT8 output directly with no such overhead.
+```
 
-| Metric | Python TRT INT8 | C++ TRT INT8 |
-|---|---|---|
-| Total board power (VDD_IN) | ~6.6W | ~7.8W |
-| CPU+GPU power | ~0.88W | ~2.3W |
-| GPU temperature | ~50.5°C | ~57-58°C |
-| GPU utilization | 27-65% | 50-80% |
-| No thermal throttling | ✅ | ✅ |
+**C++ total speedup over Python FP32:**
+```
+Python FP32  : 29.1 FPS
+C++ TRT INT8 : 193.3 FPS → +564% faster
+```
 
-C++ draws more power because GPU stays busier — less idle time between frames.
-All measurements via `tegrastats --interval 1000` during 60s live inference run.
+#### Power & Thermal (C++ TRT INT8, jetson_clocks, 60s run)
+
+| Metric | Value |
+|---|---|
+| Total board power (VDD_IN) | ~12.2W |
+| CPU+GPU power (VDD_CPU_GPU_CV) | ~5.0W |
+| GPU temperature | ~57-58°C (stable) |
+| GPU utilization | 57-87% |
+| No thermal throttling | ✅ |
 
 #### TensorRT Export Notes
 
-- FP16 build time: ~529s (normal for first-time layer optimization)
-- INT8 build time: ~428s (includes calibration on 81 nuScenes val images)
-- Known warning: TensorRT 10.3.0 on JetPack 6 with INT8 disables end2end branch — handled automatically by Ultralytics, no impact on accuracy
+- FP16 build time: ~529s (first-time layer optimization on Jetson SM87)
+- INT8 build time: ~428s (includes INT8 calibration on 81 nuScenes val images)
+- Known warning: TensorRT 10.3.0 on JetPack 6 with INT8 disables end2end branch — handled automatically by Ultralytics, no accuracy impact
 - `NvMapMemAllocInternalTagged` errors: harmless on Jetson unified memory architecture
+- TensorRT engines are hardware-specific — must be built on target device, not transferable across platforms
 
 ---
 
@@ -389,6 +409,39 @@ Colab quantization uses TFLite to prove accuracy retention (INT8 +0.45%
 over FP32). Jetson deployment uses TensorRT for NVIDIA GPU-specific
 optimization. Both formats are evaluated independently — TFLite proves
 quantization correctness, TensorRT proves real-time performance.
+
+---
+
+## Known Limitations
+
+This project targets **deployment engineering**, not production detection accuracy.
+The following limitations are expected and intentional:
+
+**Small training dataset:**
+All models are trained on nuScenes Mini (323 train / 81 val images).
+This is ~0.01% of a production autonomous driving dataset.
+mAP50=0.558 on the val set reflects the data constraint, not the
+architecture ceiling. The same pipeline accepts any YOLO26n weight —
+production accuracy requires production data.
+
+**Single camera, single modality training:**
+Models are trained on CAM_FRONT images only. Detection performance
+degrades on images from non-driving perspectives (street-level,
+elevated angles) and on classes underrepresented in nuScenes Mini
+(bus, barrier, traffic cone). In production, multi-camera rigs
+and continuous retraining on proprietary data address this.
+
+**Late fusion validated offline only:**
+Camera-LiDAR late fusion is implemented and benchmarked on nuScenes
+sample data (Colab). The C++ port (`deployment/src/late_fusion.cpp`)
+and ROS2 bag replay integration are in progress. Live fusion requires
+calibrated camera-LiDAR extrinsics specific to each sensor mounting
+configuration — not demonstrable with a USB webcam alone.
+
+**PointPillars on Jetson pending:**
+LiDAR 3D detection uses published PointPillars weights evaluated on
+the full nuScenes val set (mAP=0.354, NDS=0.476). CUDA-PointPillars
+deployment on Jetson is planned for the ROS2 integration phase.
 
 ---
 

@@ -55,6 +55,20 @@ void Profiler::addInferMs(float ms) {
     infer_times_ms_.push_back(ms);
 }
 
+void Profiler::addPreprocessMs(float ms) {
+    if (static_cast<int>(preprocess_times_ms_.size()) >= window_size_) {
+        preprocess_times_ms_.erase(preprocess_times_ms_.begin());
+    }
+    preprocess_times_ms_.push_back(ms);
+}
+
+void Profiler::addTRTMs(float ms) {
+    if (static_cast<int>(trt_times_ms_.size()) >= window_size_) {
+        trt_times_ms_.erase(trt_times_ms_.begin());
+    }
+    trt_times_ms_.push_back(ms);
+}
+
 // ── Stats ─────────────────────────────────────────────────────────────────────
 
 float Profiler::meanFPS() const {
@@ -70,6 +84,20 @@ float Profiler::meanInferMs() const {
     return std::accumulate(
         infer_times_ms_.begin(), infer_times_ms_.end(), 0.0f)
         / infer_times_ms_.size();
+}
+
+float Profiler::meanPreprocessMs() const {
+    if (preprocess_times_ms_.empty()) return 0.0f;
+    return std::accumulate(
+        preprocess_times_ms_.begin(), preprocess_times_ms_.end(), 0.0f)
+        / preprocess_times_ms_.size();
+}
+
+float Profiler::meanTRTMs() const {
+    if (trt_times_ms_.empty()) return 0.0f;
+    return std::accumulate(
+        trt_times_ms_.begin(), trt_times_ms_.end(), 0.0f)
+        / trt_times_ms_.size();
 }
 
 float Profiler::p99InferMs() const {
@@ -88,8 +116,10 @@ void Profiler::printStats(int every_n_frames) {
 
     std::cout << std::fixed << std::setprecision(1);
     std::cout << "[" << std::setw(6) << total_frames_ << " frames]"
-              << "  FPS: "      << std::setw(6) << meanFPS()
-              << "  Infer: "    << std::setw(6) << meanInferMs() << "ms"
-              << "  P99: "      << std::setw(6) << p99InferMs()  << "ms"
+              << "  FPS: "        << std::setw(6) << meanFPS()
+              << "  Total: "      << std::setw(6) << meanInferMs()    << "ms"
+              << "  Pre: "        << std::setw(5) << meanPreprocessMs() << "ms"
+              << "  TRT: "        << std::setw(5) << meanTRTMs()      << "ms"
+              << "  P99: "        << std::setw(6) << p99InferMs()     << "ms"
               << std::endl;
 }

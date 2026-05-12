@@ -44,7 +44,9 @@ public:
     int    inputWidth()   const { return input_w_; }
     int    inputHeight()  const { return input_h_; }
     int    outputSize()   const { return output_size_; }
-    float  lastInferMs()  const { return last_infer_ms_; }
+    float  lastInferMs()      const { return last_infer_ms_; }
+    float  lastPreprocessMs() const { return last_preprocess_ms_; }
+    float  lastTRTMs()        const { return last_trt_ms_; }
 
 private:
     // Engine loading
@@ -81,6 +83,13 @@ private:
     std::string input_name_;
     std::string output_name_;
 
+    // Pre-allocated Mats — avoid heap allocation every frame
+    cv::Mat resized_;
+    cv::Mat letterboxed_;
+    cv::Mat rgb_;
+
     // Profiling
-    float last_infer_ms_ = 0.0f;
+    float last_infer_ms_      = 0.0f;
+    float last_preprocess_ms_ = 0.0f;
+    float last_trt_ms_        = 0.0f;
 };

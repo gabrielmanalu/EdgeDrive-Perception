@@ -133,6 +133,8 @@ void runBenchmark(TRTEngine& engine, YOLO26Decoder& decoder,
 
         profiler.frameEnd();
         profiler.addInferMs(engine.lastInferMs());
+        profiler.addPreprocessMs(engine.lastPreprocessMs());
+        profiler.addTRTMs(engine.lastTRTMs());
         profiler.printStats(100);
 
         frame_count++;
@@ -144,11 +146,13 @@ void runBenchmark(TRTEngine& engine, YOLO26Decoder& decoder,
     // Step 5: Final results
     std::cout << "\n=== Benchmark Results ===" << std::endl;
     std::cout << std::fixed << std::setprecision(1);
-    std::cout << "Frames      : " << frame_count << std::endl;
-    std::cout << "Duration    : " << total_s << "s" << std::endl;
-    std::cout << "FPS (wall)  : " << frame_count / total_s << std::endl;
-    std::cout << "Infer mean  : " << profiler.meanInferMs() << "ms" << std::endl;
-    std::cout << "Infer P99   : " << profiler.p99InferMs()  << "ms" << std::endl;
+    std::cout << "Frames        : " << frame_count << std::endl;
+    std::cout << "Duration      : " << total_s << "s" << std::endl;
+    std::cout << "FPS (wall)    : " << frame_count / total_s << std::endl;
+    std::cout << "Infer total   : " << profiler.meanInferMs()      << "ms  (preprocess + TRT)" << std::endl;
+    std::cout << "  Preprocess  : " << profiler.meanPreprocessMs() << "ms" << std::endl;
+    std::cout << "  TRT only    : " << profiler.meanTRTMs()        << "ms" << std::endl;
+    std::cout << "Infer P99     : " << profiler.p99InferMs()       << "ms" << std::endl;
     std::cout << "=========================" << std::endl;
 }
 
@@ -185,7 +189,17 @@ void runCamera(TRTEngine& engine, YOLO26Decoder& decoder,
 
         // Inference
         float* output = engine.infer(frame);
-        auto   dets   = decoder.decode(output, frame.cols, frame.rows);
+        // auto   dets   = decoder.decode(output, frame.cols, frame.rows);
+
+        auto dets = decoder.decode(output, frame.cols, frame.rows);
+
+        // --- ADD THESE 4 LINES FOR A QUICK VISUAL SANITY CHECK ---
+        if (frame_count == 0) { // Just save the very first frame
+            cv::Mat annotated = decoder.draw(frame, dets);
+            cv::imwrite("sanity_check_cpp.jpg", annotated);
+            std::cout << ">>> Saved sanity_check_cpp.jpg to disk! <<<" << std::endl;
+        }
+        // ---------------------------------------------------------
 
         profiler.frameEnd();
         profiler.addInferMs(engine.lastInferMs());

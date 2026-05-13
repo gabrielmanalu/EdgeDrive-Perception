@@ -23,7 +23,7 @@ Why nuScenes Mini is insufficient for evaluation:
 
 Published performance (full nuScenes val set, 6019 samples):
     mAP : 0.354
-    NDS : 0.476  (nuScenes Detection Score — Tier IV's primary metric)
+    NDS : 0.476  (nuScenes Detection Score)
     Checkpoint: hv_pointpillars_fpn_sbn-all_4x8_2x_nus-3d
 
     Per-class AP (from MMDetection3D model zoo):

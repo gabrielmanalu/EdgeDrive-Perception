@@ -9,9 +9,9 @@ All benchmarks run on **Jetson Orin Nano Super 8GB** with `sudo jetson_clocks`
 
 | Format | FPS | Preprocess | TRT/Infer | Postprocess | Total/frame | Power |
 |---|---|---|---|---|---|---|
-| Python FP32 | 29.1 | 5.2ms | 27.6ms | 1.1ms | 34.0ms | — |
-| Python TRT FP16 | 87.6 | 5.6ms | 4.2ms | 1.2ms | 11.0ms | — |
-| Python TRT INT8 | 78.5 | 5.6ms | 3.5ms | 3.2ms | 12.3ms | — |
+| Python FP32 | 29.1 | 5.2ms | 27.6ms | 1.1ms | 34.0ms | ~9.9W |
+| Python TRT FP16 | 87.6 | 5.6ms | 4.2ms | 1.2ms | 11.0ms | ~11.0W |
+| Python TRT INT8 | 78.5 | 5.6ms | 3.5ms | 3.2ms | 12.3ms | ~9.7W |
 | **C++ TRT INT8** | **193.3** | **1.7ms** | **3.5ms** | — | **5.1ms** | **~12.2W** |
 
 C++ pipeline is **6.6× faster** than Python FP32 end-to-end.
@@ -38,6 +38,9 @@ PyTorch   : 2.8.0
 OpenCV    : 4.8.0
 Clocks    : sudo jetson_clocks (CPU 1728 MHz, GPU 1017 MHz)
 Dataset   : 404 nuScenes Mini CAM_FRONT images
-Preloaded : All images loaded into RAM before timing starts
+Preloaded : 404 images loaded into CPU RAM (std::vector<cv::Mat>)
+            before timing starts, eliminating disk I/O from measurements.
+            TRT input/output buffers use cudaHostAlloc (pinned UMA)
+            for zero-copy GPU access during inference.
 Duration  : 60s sustained run (single image: 20 iterations)
 ```

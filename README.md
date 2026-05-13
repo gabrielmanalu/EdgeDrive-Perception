@@ -243,7 +243,7 @@ EdgeDrive-Perception/
 │   ├── quantize.py
 │   ├── prune.py
 │   └── README.md
-├── solutions/             ← YOLO Solutions API demos
+├── solutions/             ← Ultralytics Solutions API demos
 │   ├── heatmap_demo.py
 │   ├── object_counting_demo.py
 │   ├── analytics_demo.py
@@ -268,11 +268,11 @@ EdgeDrive-Perception/
 │   │   ├── yolo26_decoder.hpp
 │   │   └── profiler.hpp
 │   └── src/
-│       ├── main.cpp
-│       ├── trt_engine.cpp
-│       ├── yolo26_decoder.cpp
-│       ├── profiler.cpp
-│       ├── camera_capture.cpp
+│       ├── main.cpp            ← benchmark + camera mode entry point
+│       ├── trt_engine.cpp      ← TRT inference, UMA zero-copy
+│       ├── yolo26_decoder.cpp  ← raw [1,12,8400] + end2end decoder
+│       ├── profiler.cpp        ← split timers (pre/TRT/post)
+│       └── camera_capture.cpp  ← live camera
 │       ├── late_fusion.cpp
 │       ├── bev_visualizer.cpp
 │       ├── object_counter.cpp
@@ -283,9 +283,28 @@ EdgeDrive-Perception/
 │       └── preprocessor.cu
 ├── notebooks/
 │   └── development_walkthrough.ipynb
+├── scripts/
+│   ├── build_engine.sh    ← export FP16/INT8 TRT engines
+│   ├── run_benchmark.sh   ← full benchmark suite
+│   └── plot_results.py    ← benchmark visualization
 ├── benchmarks/
+│   ├── README.md          ← summary table
 │   └── results/
-└── docs/
+│       ├── jetson_python.md      ← Python FP32/FP16/INT8
+│       ├── jetson_cpp.md         ← C++ TRT INT8 + power
+│       └── quantization_colab.md ← TFLite accuracy
+├── docs/
+│   ├── architecture.md           ← system design
+│   ├── benchmark_report.md       ← findings + interpretation
+│   ├── yolo26_vs_yolov8.md       ← model selection
+│   ├── nms_free_analysis.md      ← decoder debug trail
+│   ├── optimization_log.md       ← 8 optimizations, before/after
+│   ├── sensor_fusion_analysis.md ← fusion design + results
+│   ├── class_distribution.md     ← dataset imbalance analysis
+│   └── solutions_on_edge.md      ← Solutions API evaluation
+├── weights/               ← not in repo (see Pre-trained Weights)
+├── calibration.yaml       ← INT8 calibration config
+└── calibration_images/    ← 81 nuScenes val images for INT8
 ```
 
 ---
@@ -365,10 +384,33 @@ Training time: ~70 min per model on Tesla T4 (Google Colab).
 
 ---
 
-## Development Walkthrough
+## Documentation
 
-The complete development process including all debugging steps,
-design decisions, and intermediate results is documented in:
+### Design & Analysis
+
+| Document | Description |
+|---|---|
+| [`docs/architecture.md`](docs/architecture.md) | Full pipeline, UMA memory model, quantization flow |
+| [`docs/yolo26_vs_yolov8.md`](docs/yolo26_vs_yolov8.md) | Model selection rationale with data |
+| [`docs/nms_free_analysis.md`](docs/nms_free_analysis.md) | NMS-free head debug trail — JetPack 6 INT8 issue, decoder bugs |
+| [`docs/sensor_fusion_analysis.md`](docs/sensor_fusion_analysis.md) | Late fusion design, parameter choices, sample results |
+| [`docs/class_distribution.md`](docs/class_distribution.md) | nuScenes class imbalance and impact on model confidence |
+| [`docs/solutions_on_edge.md`](docs/solutions_on_edge.md) | Ultralytics Solutions API evaluation, speed estimation limits |
+
+### Benchmarks
+
+| Document | Description |
+|---|---|
+| [`docs/benchmark_report.md`](docs/benchmark_report.md) | Summary, key findings, interpretation |
+| [`docs/optimization_log.md`](docs/optimization_log.md) | 8 optimizations with before/after measurements |
+| [`benchmarks/results/jetson_python.md`](benchmarks/results/jetson_python.md) | Python FP32/FP16/INT8 full breakdown |
+| [`benchmarks/results/jetson_cpp.md`](benchmarks/results/jetson_cpp.md) | C++ TRT INT8 full breakdown + power/thermal |
+| [`benchmarks/results/quantization_colab.md`](benchmarks/results/quantization_colab.md) | TFLite quantization accuracy results |
+
+### Development Walkthrough
+
+Complete Google Colab development process including debugging steps and intermediate
+results:
 
 [`notebooks/development_walkthrough.ipynb`](notebooks/development_walkthrough.ipynb)
 

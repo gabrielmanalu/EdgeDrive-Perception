@@ -305,7 +305,6 @@ but requires ~200MB model size and runs at ~5 FPS on Jetson Orin Nano
 Late fusion is the right choice for our platform:
 - Runs at 30+ FPS on Jetson Orin Nano under 10W
 - Each modality can fail independently without breaking the other
-- Directly mirrors what Tier IV's edge-auto pipeline does
 - Explainable and debuggable — failure modes are clearly identified
 
 BEVFusion is documented as future work for higher-compute platforms.

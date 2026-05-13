@@ -45,6 +45,7 @@ set(SOURCES
   src/trt_engine.cpp
   src/yolo26_decoder.cpp
   src/profiler.cpp
+  src/camera_capture.cpp
   src/main.cpp
 )
 

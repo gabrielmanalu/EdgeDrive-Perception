@@ -7,29 +7,40 @@
  * Mode 1 — Benchmark (--benchmark):
  *   Loads 404 nuScenes images into RAM (no disk I/O during timing)
  *   Runs inference for N seconds
- *   Reports FPS, latency, P99
- *   Use for apples-to-apples comparison with Python baseline
+ *   Reports FPS, latency split (pre/TRT), P99
  *
- * Mode 2 — Live camera (--camera):
- *   Opens USB webcam via cv::VideoCapture
- *   Runs real-time inference + display
- *   Shows FPS overlay on frame
- *   Press 'q' to quit
+ * Mode 2 — Live camera (--camera / --csi):
+ *   USB:  --camera 0          (cv::VideoCapture + V4L2)
+ *   CSI:  --csi 0             (nvarguscamerasrc GStreamer)
+ *   Runs real-time inference + HUD overlay
+ *   Optional video save: --save-video output.mp4
+ *   Press 'q' or ESC to quit
  *
  * Usage:
- *   # Benchmark on nuScenes images
- *   ./edgedrive --engine weights/yolo26n_det_int8.engine \
- *               --benchmark \
- *               --images /home/gabriel/EdgeDrive-Perception/test_images \
- *               --duration 60
+ *   # Benchmark
+ *   ./edgedrive --engine weights/yolo26n_det_int8_raw.engine \
+ *               --benchmark --images test_images --duration 60
  *
- *   # Live camera
- *   ./edgedrive --engine weights/yolo26n_det_int8.engine \
+ *   # USB camera
+ *   ./edgedrive --engine weights/yolo26n_det_int8_raw.engine \
  *               --camera 0
+ *
+ *   # CSI camera (Jetson)
+ *   ./edgedrive --engine weights/yolo26n_det_int8_raw.engine \
+ *               --csi 0
+ *
+ *   # Save to video
+ *   ./edgedrive --engine weights/yolo26n_det_int8_raw.engine \
+ *               --camera 0 --save-video demo.mp4
+ *
+ *   # Headless
+ *   ./edgedrive --engine weights/yolo26n_det_int8_raw.engine \
+ *               --camera 0 --no-display
  */
 
 #include "trt_engine.hpp"
 #include "yolo26_decoder.hpp"
+#include "camera_capture.hpp"
 #include "profiler.hpp"
 
 #include <iostream>
@@ -46,26 +57,34 @@ namespace fs = std::filesystem;
 // ── Argument parsing ──────────────────────────────────────────────────────────
 
 struct Args {
-    std::string engine_path = "weights/yolo26n_det_int8.engine";
-    std::string images_dir  = "";
-    int         camera_id   = -1;
-    int         duration_s  = 60;
+    std::string engine_path  = "weights/yolo26n_det_int8_raw.engine";
+    std::string images_dir   = "";
+    std::string save_video   = "";
+    std::string video_path   = "";
+    int         camera_id    = -1;
+    int         csi_id       = -1;
+    int         duration_s   = 60;
     float       score_thresh = 0.3f;
-    bool        benchmark   = false;
-    bool        no_display  = false;
+    bool        benchmark    = false;
+    bool        no_display   = false;
+    bool        no_loop      = false;
 };
 
 Args parseArgs(int argc, char** argv) {
     Args args;
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
-        if      (arg == "--engine"    && i+1 < argc) args.engine_path  = argv[++i];
-        else if (arg == "--images"    && i+1 < argc) args.images_dir   = argv[++i];
-        else if (arg == "--camera"    && i+1 < argc) args.camera_id    = std::stoi(argv[++i]);
-        else if (arg == "--duration"  && i+1 < argc) args.duration_s   = std::stoi(argv[++i]);
-        else if (arg == "--threshold" && i+1 < argc) args.score_thresh = std::stof(argv[++i]);
-        else if (arg == "--benchmark")               args.benchmark    = true;
-        else if (arg == "--no-display")              args.no_display   = true;
+        if      (arg == "--engine"     && i+1 < argc) args.engine_path  = argv[++i];
+        else if (arg == "--images"     && i+1 < argc) args.images_dir   = argv[++i];
+        else if (arg == "--camera"     && i+1 < argc) args.camera_id    = std::stoi(argv[++i]);
+        else if (arg == "--csi"        && i+1 < argc) args.csi_id       = std::stoi(argv[++i]);
+        else if (arg == "--video"      && i+1 < argc) args.video_path   = argv[++i];
+        else if (arg == "--save-video" && i+1 < argc) args.save_video   = argv[++i];
+        else if (arg == "--duration"   && i+1 < argc) args.duration_s   = std::stoi(argv[++i]);
+        else if (arg == "--threshold"  && i+1 < argc) args.score_thresh = std::stof(argv[++i]);
+        else if (arg == "--benchmark")                args.benchmark    = true;
+        else if (arg == "--no-display")               args.no_display   = true;
+        else if (arg == "--no-loop")                  args.no_loop      = true;
     }
     return args;
 }
@@ -170,77 +189,6 @@ void runBenchmark(TRTEngine& engine, YOLO26Decoder& decoder,
     std::cout << "=========================" << std::endl;
 }
 
-// ── Live camera mode ──────────────────────────────────────────────────────────
-
-void runCamera(TRTEngine& engine, YOLO26Decoder& decoder,
-               int camera_id, bool no_display)
-{
-    std::cout << "\n=== Live Camera Mode ===" << std::endl;
-    std::cout << "Opening camera " << camera_id << "..." << std::endl;
-
-    cv::VideoCapture cap(camera_id);
-    if (!cap.isOpened()) {
-        throw std::runtime_error(
-            "Failed to open camera: " + std::to_string(camera_id));
-    }
-
-    // Set camera resolution
-    cap.set(cv::CAP_PROP_FRAME_WIDTH,  1280);
-    cap.set(cv::CAP_PROP_FRAME_HEIGHT, 720);
-
-    std::cout << "Camera opened. Press 'q' to quit." << std::endl;
-
-    Profiler profiler(30);
-    cv::Mat  frame;
-
-    while (true) {
-        if (!cap.read(frame) || frame.empty()) {
-            std::cerr << "Failed to read frame" << std::endl;
-            break;
-        }
-
-        profiler.frameStart();
-
-        // Inference
-        float* output = engine.infer(frame);
-        auto   dets   = decoder.decode(output, engine.outputSize(), frame.cols, frame.rows);
-
-        profiler.frameEnd();
-        profiler.addInferMs(engine.lastInferMs());
-
-        if (!no_display) {
-            // Draw detections
-            cv::Mat annotated = decoder.draw(frame, dets);
-
-            // FPS overlay
-            std::string fps_str = "FPS: " +
-                std::to_string(static_cast<int>(profiler.meanFPS()));
-            cv::putText(annotated, fps_str,
-                        cv::Point(10, 30),
-                        cv::FONT_HERSHEY_SIMPLEX, 1.0,
-                        cv::Scalar(0, 255, 0), 2, cv::LINE_AA);
-
-            // Inference time overlay
-            std::string infer_str = "Infer: " +
-                std::to_string(static_cast<int>(engine.lastInferMs())) + "ms";
-            cv::putText(annotated, infer_str,
-                        cv::Point(10, 65),
-                        cv::FONT_HERSHEY_SIMPLEX, 0.7,
-                        cv::Scalar(0, 255, 0), 2, cv::LINE_AA);
-
-            cv::imshow("EdgeDrive Perception", annotated);
-
-            if (cv::waitKey(1) == 'q') break;
-        }
-
-        // Print stats every 30 frames
-        profiler.printStats(30);
-    }
-
-    cap.release();
-    if (!no_display) cv::destroyAllWindows();
-}
-
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 int main(int argc, char** argv) {
@@ -251,28 +199,45 @@ int main(int argc, char** argv) {
     std::cout << "Thresh : " << args.score_thresh << std::endl;
 
     try {
-        // Initialize engine and decoder
-        TRTEngine    engine(args.engine_path);
+        TRTEngine     engine(args.engine_path);
         YOLO26Decoder decoder(args.score_thresh);
 
         if (args.benchmark && !args.images_dir.empty()) {
             runBenchmark(engine, decoder,
                          args.images_dir, args.duration_s);
-        } else if (args.camera_id >= 0) {
-            runCamera(engine, decoder,
-                      args.camera_id, args.no_display);
+
+        } else if (!args.video_path.empty() ||
+                   args.camera_id >= 0 ||
+                   args.csi_id    >= 0) {
+            CameraConfig cfg;
+            cfg.no_display  = args.no_display;
+            cfg.save_video  = args.save_video;
+            cfg.loop_video  = !args.no_loop;
+
+            if (!args.video_path.empty()) {
+                cfg.video_path = args.video_path;
+            } else if (args.csi_id >= 0) {
+                cfg.gst_pipeline = buildCSIPipeline(
+                    args.csi_id, cfg.width, cfg.height, cfg.fps);
+            } else {
+                cfg.camera_id = args.camera_id;
+            }
+
+            runCamera(engine, decoder, cfg);
+
         } else {
             std::cout << "\nUsage:" << std::endl;
-            std::cout << "  Benchmark: ./edgedrive "
-                      << "--engine weights/yolo26n_det_int8.engine "
-                      << "--benchmark "
-                      << "--images /path/to/images "
-                      << "--duration 60"
-                      << std::endl;
-            std::cout << "  Camera:    ./edgedrive "
-                      << "--engine weights/yolo26n_det_int8.engine "
-                      << "--camera 0"
-                      << std::endl;
+            std::cout << "  Benchmark  : ./edgedrive --engine <path>"
+                         " --benchmark --images <dir> [--duration 60]" << std::endl;
+            std::cout << "  USB camera : ./edgedrive --engine <path>"
+                         " --camera 0" << std::endl;
+            std::cout << "  CSI camera : ./edgedrive --engine <path>"
+                         " --csi 0" << std::endl;
+            std::cout << "  Video file : ./edgedrive --engine <path>"
+                         " --video driving.mp4 [--no-loop]" << std::endl;
+            std::cout << "  Save video : ./edgedrive --engine <path>"
+                         " --camera 0 --save-video demo.mp4" << std::endl;
+            return 1;
         }
 
     } catch (const std::exception& e) {

@@ -143,6 +143,12 @@ Bug 4: Class-aware NMS too lenient
   Symptom : hundreds of stacked boxes per object
   Cause   : pedestrian box did not suppress overlapping car box
   Fix     : class-agnostic NMS
+
+Bug 5: Wrong coordinate unscaling (letterbox not reversed)
+  Symptom : boxes correct on 1600×900 nuScenes, offset on 1280×720 camera
+  Cause   : scale_x = orig_w/640 ignores letterbox padding
+  Debug   : 1280×720 → pad_y=140px. y×1.125 ≠ (y-140)/0.5
+  Fix     : gain/pad inverse transform (same as Ultralytics postprocessor)
 ```
 
 ---
@@ -150,16 +156,21 @@ Bug 4: Class-aware NMS too lenient
 ## Final Working Decoder
 
 ```cpp
+// Letterbox inverse transform
+float gain  = std::min(640.0f / orig_w, 640.0f / orig_h);
+float pad_x = (640.0f - orig_w * gain) / 2.0f;
+float pad_y = (640.0f - orig_h * gain) / 2.0f;
+
 for (int a = 0; a < 8400; a++) {
-    // cxcywh in 640×640 space
+    // cxcywh in 640×640 letterboxed space
     float cx = data[0 * 8400 + a];
     float cy = data[1 * 8400 + a];
     float w  = data[2 * 8400 + a];
     float h  = data[3 * 8400 + a];
 
-    if (w <= 0.0f || h <= 0.0f) continue;  // degenerate
+    if (w <= 0.0f || h <= 0.0f) continue;
 
-    // convert to xyxy
+    // convert cxcywh → xyxy
     float x1 = cx - w * 0.5f;
     float y1 = cy - h * 0.5f;
     float x2 = cx + w * 0.5f;
@@ -175,13 +186,28 @@ for (int a = 0; a < 8400; a++) {
 
     if (max_score < score_thresh_) continue;
 
-    // scale to original image, push candidate
+    // reverse letterbox: remove padding, undo scale
+    det.x1 = (x1 - pad_x) / gain;
+    det.y1 = (y1 - pad_y) / gain;
+    det.x2 = (x2 - pad_x) / gain;
+    det.y2 = (y2 - pad_y) / gain;
+    // clamp to original image bounds
     ...
 }
 // class-agnostic NMS
 ```
 
-Result: clean detections confirmed on bus.jpg (pedestrian 86%, 72%, 65%).
+**Note on the letterbox fix:** A fifth bug was found during live camera testing.
+Simple `scale_x = orig_w/640` only works when input and output aspect ratios match.
+For 1280×720 input letterboxed to 640×640:
+
+```
+gain  = min(640/1280, 640/720) = 0.5
+pad_y = (640 - 720×0.5) / 2   = 140px  ← top and bottom padding
+
+Wrong: y1 × (720/640) = y1 × 1.125  (ignores 140px padding → vertical offset)
+Right: (y1 - 140) / 0.5             (removes padding first, then unscales)
+```
 
 ---
 

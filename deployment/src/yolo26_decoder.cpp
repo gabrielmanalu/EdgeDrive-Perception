@@ -88,8 +88,12 @@ std::vector<Detection> YOLO26Decoder::decode(
 std::vector<Detection> YOLO26Decoder::decodeEndToEnd(
     const float* data, int orig_w, int orig_h)
 {
-    const float scale_x = static_cast<float>(orig_w) / 640.0f;
-    const float scale_y = static_cast<float>(orig_h) / 640.0f;
+    // Letterbox inverse transform:
+    // gain  = uniform scale applied during preprocessing
+    // pad_x/y = padding added to reach 640×640
+    float gain  = std::min(640.0f / orig_w, 640.0f / orig_h);
+    float pad_x = (640.0f - orig_w * gain) / 2.0f;
+    float pad_y = (640.0f - orig_h * gain) / 2.0f;
 
     std::vector<Detection> dets;
     dets.reserve(32);
@@ -103,10 +107,16 @@ std::vector<Detection> YOLO26Decoder::decodeEndToEnd(
         if (class_id < 0 || class_id >= NUM_CLASSES) continue;
 
         Detection det;
-        det.x1         = std::max(0.0f, std::min(d[0] * scale_x, (float)orig_w));
-        det.y1         = std::max(0.0f, std::min(d[1] * scale_y, (float)orig_h));
-        det.x2         = std::max(0.0f, std::min(d[2] * scale_x, (float)orig_w));
-        det.y2         = std::max(0.0f, std::min(d[3] * scale_y, (float)orig_h));
+        det.x1 = (d[0] - pad_x) / gain;
+        det.y1 = (d[1] - pad_y) / gain;
+        det.x2 = (d[2] - pad_x) / gain;
+        det.y2 = (d[3] - pad_y) / gain;
+
+        det.x1 = std::max(0.0f, std::min(det.x1, (float)orig_w));
+        det.y1 = std::max(0.0f, std::min(det.y1, (float)orig_h));
+        det.x2 = std::max(0.0f, std::min(det.x2, (float)orig_w));
+        det.y2 = std::max(0.0f, std::min(det.y2, (float)orig_h));
+
         det.score      = score;
         det.class_id   = class_id;
         det.class_name = CLASS_NAMES[class_id];
@@ -169,8 +179,14 @@ std::vector<Detection> YOLO26Decoder::decodeRaw(
      *   4. Apply NMS per class
      */
 
-    const float scale_x = static_cast<float>(orig_w) / 640.0f;
-    const float scale_y = static_cast<float>(orig_h) / 640.0f;
+    // Letterbox inverse transform:
+    // gain  = uniform scale applied during preprocessing
+    // pad_x/y = padding added to reach 640×640
+    // Example: 1280×720 → gain=0.5, pad_x=0, pad_y=140
+    //          1600×900 → gain=0.4, pad_x=0, pad_y=20
+    float gain  = std::min(640.0f / orig_w, 640.0f / orig_h);
+    float pad_x = (640.0f - orig_w * gain) / 2.0f;
+    float pad_y = (640.0f - orig_h * gain) / 2.0f;
 
     std::vector<Detection> candidates;
     candidates.reserve(256);
@@ -211,12 +227,17 @@ std::vector<Detection> YOLO26Decoder::decodeRaw(
 
         if (max_score < score_thresh_) continue;
 
-        // Scale to original image
+        // Reverse letterbox: remove padding then undo scale
         Detection det;
-        det.x1 = std::max(0.0f, std::min(x1 * scale_x, (float)orig_w));
-        det.y1 = std::max(0.0f, std::min(y1 * scale_y, (float)orig_h));
-        det.x2 = std::max(0.0f, std::min(x2 * scale_x, (float)orig_w));
-        det.y2 = std::max(0.0f, std::min(y2 * scale_y, (float)orig_h));
+        det.x1 = (x1 - pad_x) / gain;
+        det.y1 = (y1 - pad_y) / gain;
+        det.x2 = (x2 - pad_x) / gain;
+        det.y2 = (y2 - pad_y) / gain;
+
+        det.x1 = std::max(0.0f, std::min(det.x1, (float)orig_w));
+        det.y1 = std::max(0.0f, std::min(det.y1, (float)orig_h));
+        det.x2 = std::max(0.0f, std::min(det.x2, (float)orig_w));
+        det.y2 = std::max(0.0f, std::min(det.y2, (float)orig_h));
         det.score      = max_score;
         det.class_id   = class_id;
         det.class_name = CLASS_NAMES[class_id];

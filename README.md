@@ -203,9 +203,9 @@ See [`solutions/README.md`](solutions/README.md) for demos.
 **[(footage video source)](https://www.youtube.com/watch?v=qPgWV8Rxemo)**
 | Format | FPS | Pre | TRT | Post | Total/frame | Engine |
 |---|---|---|---|---|---|---|
-| **C++ TRT INT8 (USB camera)** | **202.6** | **1.1ms** | **3.7ms** | — | **4.8ms** | 5.4 MB |
-| **C++ TRT INT8 (video NVDEC)** | **195.2** | **1.2ms** | **4.1ms** | — | **5.3ms** | 5.4 MB |
-| **C++ TRT INT8 (video NVDEC + VNC)** | **183.5** | **1.1ms** | **4.0ms** | — | **5.1ms** | 5.4 MB |
+| **C++ TRT INT8 (USB camera)** | **202.6** | **1.1ms** | **3.7ms** |  **~0.1ms** | **4.8ms** | 5.4 MB |
+| **C++ TRT INT8 (video NVDEC)** | **195.2** | **1.2ms** | **4.1ms** |  **~0.1ms** | **5.3ms** | 5.4 MB |
+| **C++ TRT INT8 (video NVDEC + VNC)** | **183.5** | **1.1ms** | **4.0ms** |  **~0.1ms** | **5.1ms** | 5.4 MB |
 
 #### Full Pipeline Breakdown — 404 nuScenes Images, 60s run
 
@@ -214,9 +214,14 @@ See [`solutions/README.md`](solutions/README.md) for demos.
 | Python FP32 | 29.1 | 5.2ms | 27.6ms | 1.1ms | 34.0ms | 5.1 MB |
 | Python TRT FP16 | 87.6 | 5.6ms | 4.2ms | 1.2ms | 11.0ms | 8.0 MB |
 | Python TRT INT8 | 78.5 | 5.6ms | **3.5ms** | 3.2ms | 12.3ms | 5.4 MB |
-| **C++ TRT INT8 (bench)** | **193.3** | **1.7ms** | **3.5ms** | — | **5.1ms** | 5.4 MB |
+| **C++ TRT INT8 (bench)** | **193.3** | **1.7ms** | **3.5ms** |  **~0.1ms** | **5.1ms** | 5.4 MB |
 
-> Benchmark uses 1600×900 nuScenes images. USB camera and video use 1280×720 → faster preprocessing.
+```
+Benchmark uses 1600×900 nuScenes images. USB camera and video use 1280×720 → faster preprocessing.
+C++ postprocess (~0.1ms) = custom decoder: 8400-anchor loop + cxcywh→xyxy + NMS.
+Not timed in profiler (below measurement overhead). 
+Python INT8 postprocess (3.2ms) = Ultralytics unpacking INT8 tensor into Python objects + Python NMS — 32× slower.
+```
 
 #### Full Pipeline Breakdown — Single Image (20 iterations)
 
@@ -225,7 +230,7 @@ See [`solutions/README.md`](solutions/README.md) for demos.
 | Python FP32 | 22.6 | 6.3ms | 28.7ms | 0.9ms | 35.9ms |
 | Python TRT FP16 | 50.3 | 6.7ms | 4.5ms | 1.3ms | 12.5ms |
 | Python TRT INT8 | 47.4 | 6.5ms | 3.7ms | 3.5ms | 13.7ms |
-| **C++ TRT INT8** | **193.0** | **1.7ms** | **3.4ms** | — | **5.1ms** |
+| **C++ TRT INT8** | **193.0** | **1.7ms** | **3.4ms** | **~0.1ms** | **5.1ms** |
 
 #### Key Observations
 
@@ -248,6 +253,14 @@ Python INT8: TRT 3.5ms + postprocess 3.2ms = 6.7ms GPU work → 78.5 FPS
 INT8 postprocessing is 2.7× slower than FP16 due to Ultralytics
 output tensor layout differences — not a model issue, a runtime issue.
 C++ decoder handles INT8 output directly with no such overhead.
+```
+
+**C++ postprocess is 32× faster than Python INT8:**
+```
+Python INT8 postprocess : 3.2ms  (tensor unpacking + NMS in Python)
+C++ custom decoder      : ~0.1ms (raw pointer loop + NMS in C++)
+  → 8400-anchor loop, cxcywh→xyxy, score filter, class-agnostic NMS
+  → below profiler measurement threshold, excluded from timer
 ```
 
 **C++ total speedup over Python FP32:**

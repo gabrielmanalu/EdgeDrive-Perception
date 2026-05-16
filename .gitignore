@@ -1,38 +1,77 @@
-# Data - never commit nuScenes dataset
-data/
-*.bag
+# ============================================================================
+# EdgeDrive Perception — .gitignore
+# ============================================================================
 
-# Model weights - too large for git (use Git LFS or Drive)
-*.pt
-*.pth
-*.onnx
+# ── Large binary files — download or generate locally ─────────────────────
+
+# TensorRT engines (device-specific, not transferable)
 *.engine
 *.trt
 
-# Python
+# Model weights
+*.pt
+*.pth
+*.onnx
+*.wts
+
+# TFLite models
+*.tflite
+
+# Video files
+*.mp4
+*.avi
+*.mov
+*.mkv
+
+# ── Dataset and generated data ────────────────────────────────────────────
+
+# nuScenes dataset (too large, download from nuscenes.org)
+data/
+
+# Test images and videos (generated locally)
+test_images/
+test_videos/
+
+# Output files
+output/
+logs/
+
+# ── Build artifacts ───────────────────────────────────────────────────────
+
+# C++ build
+deployment/build/
+
+# ROS2 colcon build artifacts
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/
+
+# Python cache
 __pycache__/
 *.pyc
 *.pyo
-.env
+*.pyd
+.pytest_cache/
 *.egg-info/
-
-# Jupyter
-.ipynb_checkpoints/
-
-# Build artifacts
+dist/
 build/
-*.o
-*.a
-*.so
 
-# Benchmark outputs
-benchmarks/results/*.csv
-benchmarks/power_log/*.log
-benchmarks/thermal_log/*.log
+# ── IDE and OS files ──────────────────────────────────────────────────────
 
-# Demo videos (too large)
-demo/*.mp4
-
-# OS
+.vscode/
+.idea/
+*.swp
+*.swo
 .DS_Store
 Thumbs.db
+
+# ── Docker volumes ────────────────────────────────────────────────────────
+
+# ROS2 bags (generated from nuScenes conversion)
+bags/
+
+# ── Keep these (explicitly) ───────────────────────────────────────────────
+
+# calibration_images/ ← 14MB, needed for INT8 engine build — DO NOT ignore
+# calibration.yaml    ← tiny config — DO NOT ignore
+# weights/.gitkeep    ← placeholder so folder exists — DO NOT ignore

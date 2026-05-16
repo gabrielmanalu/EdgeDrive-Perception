@@ -1,0 +1,128 @@
+# ============================================================================
+# EdgeDrive Perception — ROS2 Docker Compose
+# ============================================================================
+#
+# Prerequisites:
+#   sudo jetson_clocks
+#   xhost +local:docker
+#   docker build -t edgedrive-ros2:latest -f docker/Dockerfile.ros2 .
+#
+# Usage:
+#   docker compose -f docker/docker-compose.ros2.yml run --rm camera-node
+#   docker compose -f docker/docker-compose.ros2.yml run --rm camera-node-bev
+#   docker compose -f docker/docker-compose.ros2.yml run --rm dev
+#
+# Environment variables:
+#   ENGINE  — engine filename in weights/ (default: yolo26n_det_int8_raw.engine)
+#   THRESH  — score threshold             (default: 0.3)
+#   BAG     — rosbag path in bags/        (default: nuscenes.db3)
+# ============================================================================
+
+name: edgedrive-ros2
+
+x-base: &base
+  image: edgedrive-ros2:latest
+  build:
+    context: ..
+    dockerfile: docker/Dockerfile.ros2
+  runtime: nvidia
+  environment:
+    - NVIDIA_VISIBLE_DEVICES=all
+    - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility,display
+    - DISPLAY=${DISPLAY}
+    - ROS_DOMAIN_ID=0
+  network_mode: host
+  restart: "no"
+  volumes:
+    - ../weights:/workspace/weights:ro
+    - ../test_videos:/workspace/test_videos:ro
+    - ../bags:/workspace/bags:ro
+    - ../output:/workspace/output
+    - /tmp/.X11-unix:/tmp/.X11-unix
+
+services:
+
+  # ── Camera detection node ─────────────────────────────────────────────────
+  camera-node:
+    <<: *base
+    devices:
+      - /dev/video0:/dev/video0
+      - /dev/nvmap:/dev/nvmap
+      - /dev/nvhost-ctrl-gpu:/dev/nvhost-ctrl-gpu
+      - /dev/nvhost-gpu:/dev/nvhost-gpu
+      - /dev/nvhost-as-gpu:/dev/nvhost-as-gpu
+      - /dev/nvhost-tsg-gpu:/dev/nvhost-tsg-gpu
+    command: >
+      ros2 run edgedrive_perception camera_node --ros-args
+      -p engine_path:=/workspace/weights/${ENGINE:-yolo26n_det_int8_raw.engine}
+      -p score_threshold:=${THRESH:-0.3}
+      -p publish_viz:=true
+      -p publish_bev:=false
+
+  # ── Camera node + BEV ─────────────────────────────────────────────────────
+  camera-node-bev:
+    <<: *base
+    devices:
+      - /dev/video0:/dev/video0
+      - /dev/nvmap:/dev/nvmap
+      - /dev/nvhost-ctrl-gpu:/dev/nvhost-ctrl-gpu
+      - /dev/nvhost-gpu:/dev/nvhost-gpu
+      - /dev/nvhost-as-gpu:/dev/nvhost-as-gpu
+      - /dev/nvhost-tsg-gpu:/dev/nvhost-tsg-gpu
+    command: >
+      ros2 run edgedrive_perception camera_node --ros-args
+      -p engine_path:=/workspace/weights/${ENGINE:-yolo26n_det_int8_raw.engine}
+      -p score_threshold:=${THRESH:-0.3}
+      -p publish_viz:=true
+      -p publish_bev:=true
+
+  # ── Launch file ───────────────────────────────────────────────────────────
+  camera-launch:
+    <<: *base
+    devices:
+      - /dev/video0:/dev/video0
+      - /dev/nvmap:/dev/nvmap
+      - /dev/nvhost-ctrl-gpu:/dev/nvhost-ctrl-gpu
+      - /dev/nvhost-gpu:/dev/nvhost-gpu
+      - /dev/nvhost-as-gpu:/dev/nvhost-as-gpu
+      - /dev/nvhost-tsg-gpu:/dev/nvhost-tsg-gpu
+    command: >
+      ros2 launch edgedrive_perception camera.launch.py
+      engine:=/workspace/weights/${ENGINE:-yolo26n_det_int8_raw.engine}
+      threshold:=${THRESH:-0.3}
+      publish_bev:=true
+
+  # ── nuScenes bag replay (Phase 2) ──────────────────────────────────────────
+  bag-replay:
+    <<: *base
+    command: >
+      ros2 bag play bags/${BAG:-nuscenes.db3}
+      --topics /nuscenes/camera/image_raw /nuscenes/lidar/pointcloud
+      --loop
+
+  # ── RViz2 visualization ───────────────────────────────────────────────────
+  rviz:
+    <<: *base
+    command: rviz2
+
+  # ── Interactive development shell ─────────────────────────────────────────
+  dev:
+    <<: *base
+    devices:
+      - /dev/video0:/dev/video0
+      - /dev/nvmap:/dev/nvmap
+      - /dev/nvhost-ctrl-gpu:/dev/nvhost-ctrl-gpu
+      - /dev/nvhost-gpu:/dev/nvhost-gpu
+      - /dev/nvhost-as-gpu:/dev/nvhost-as-gpu
+      - /dev/nvhost-tsg-gpu:/dev/nvhost-tsg-gpu
+    volumes:
+      - ../weights:/workspace/weights:ro
+      - ../test_videos:/workspace/test_videos:ro
+      - ../bags:/workspace/bags:ro
+      - ../ros2_ws:/workspace/ros2_ws
+      - ../deployment:/workspace/deployment
+      - ../output:/workspace/output
+      - /tmp/.X11-unix:/tmp/.X11-unix
+    command: bash
+    stdin_open: true
+    tty: true

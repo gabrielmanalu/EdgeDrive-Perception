@@ -239,3 +239,65 @@ Check the engine path is correct and weights/ is mounted:
 docker compose -f docker/docker-compose.yml run --rm camera \
     --engine weights/yolo26n_det_int8_raw.engine
 ```
+
+---
+
+## ROS2 Development Container
+
+A second container adds ROS2 Humble on top of the same `l4t-jetpack:r36.4.0` base.
+Same TRT 10.3.0 — no engine rebuild needed.
+
+```
+Dockerfile.ros2       ← ROS2 dev container
+docker-compose.ros2.yml
+ros2_entrypoint.sh
+```
+
+### Build ROS2 image
+
+```bash
+cd ~/EdgeDrive-Perception
+docker build -t edgedrive-ros2:latest -f docker/Dockerfile.ros2 .
+```
+
+### Run camera_node via ROS2
+
+```bash
+sudo jetson_clocks
+xhost +local:docker
+
+# Camera detection node
+docker compose -f docker/docker-compose.ros2.yml run --rm camera-node
+
+# Camera node + BEV visualization
+docker compose -f docker/docker-compose.ros2.yml run --rm camera-node-bev
+
+# Interactive dev shell
+docker compose -f docker/docker-compose.ros2.yml run --rm dev
+```
+
+### Verify topics
+
+```bash
+# In a second terminal while camera-node is running
+docker compose -f docker/docker-compose.ros2.yml run --rm dev \
+    ros2 topic list
+# /detections/camera
+# /camera/annotated
+# /camera/bev  (if publish_bev=true)
+```
+
+### Two containers summary
+
+| Container | Image | Size | TRT | Purpose |
+|---|---|---|---|---|
+| `edgedrive` | `Dockerfile` | ~10GB | 10.3.0 | Production C++ runtime |
+| `edgedrive-ros2` | `Dockerfile.ros2` | ~14GB | 10.3.0 | ROS2 development + fusion |
+
+Both use `l4t-jetpack:r36.4.0` as base → same TRT version → same engines work in both.
+
+### Delete dusty-nv image (no longer needed)
+
+```bash
+docker rmi dustynv/ros:humble-desktop-l4t-r36.4.0
+```

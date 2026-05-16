@@ -1,0 +1,22 @@
+# camera_node.yaml — Default parameters for CameraNode
+# Override at launch time with:
+#   ros2 run edgedrive_perception camera_node --ros-args --params-file config/camera_node.yaml
+
+camera_node:
+  ros__parameters:
+    # TensorRT engine path
+    engine_path: "/workspace/weights/yolo26n_det_int8_raw.engine"
+
+    # Detection confidence threshold (0.0 - 1.0)
+    score_threshold: 0.3
+
+    # Publish annotated image to /camera/annotated
+    publish_viz: true
+
+    # Publish BEV projection to /camera/bev
+    publish_bev: false
+
+    # Camera height above ground (meters) — used for BEV ground projection
+    # 1.2m: typical dashcam / USB webcam on Jetson
+    # Adjust for actual mount height for better distance accuracy
+    camera_height: 1.2

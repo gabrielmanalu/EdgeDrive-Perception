@@ -4,24 +4,36 @@ Production runtime container for Jetson Orin Nano Super.
 Isolates the C++ TRT deployment stack from the host JetPack environment.
 
 ```
-Base image : nvcr.io/nvidia/l4t-tensorrt:r36.3.0-runtime
+Base image : nvcr.io/nvidia/l4t-jetpack:r36.4.0
 CUDA       : 12.6
 TensorRT   : 10.x
-OpenCV     : 4.8.0 (with GStreamer)
+OpenCV     : 4.8.0
+Image size : ~10GB (l4t-jetpack includes full CUDA + TRT + cuDNN + OpenCV)
 Binary     : edgedrive (compiled inside container, multi-stage build)
+Status     : ✅ tested and working on Jetson Orin Nano Super 8GB
 ```
 
 > **Note:** This container is for the production C++ pipeline only.
-> The ROS2 development environment uses a separate image based on
-> dusty-nv/jetson-containers (see roadmap for June 2026).
+> The ROS2 development environment uses a separate image.
+
+---
+
+## Build Times
+
+```
+First build (no cache) : ~15-20 min  (downloads base image + installs packages)
+Cached rebuild         : ~16s        (only recompiles C++ when source changes)
+Docker layer caching means rebuilding after source changes is very fast.
+```
 
 ---
 
 ## Requirements
 
-- Jetson Orin Nano Super with JetPack R36.3.0 or newer
+- Jetson Orin Nano Super with JetPack R36.4.0 or newer
 - Docker 20.10+
 - NVIDIA Container Runtime (included with JetPack)
+- ~15GB free disk space (10GB image + build cache)
 
 ---
 
@@ -46,7 +58,7 @@ sudo systemctl restart docker
 xhost +local:docker
 ```
 
-Add to `~/.bashrc` to persist across reboots:
+Add to `~/.bashrc` to persist:
 ```bash
 echo "xhost +local:docker" >> ~/.bashrc
 ```
@@ -57,7 +69,7 @@ echo "xhost +local:docker" >> ~/.bashrc
 sudo jetson_clocks
 ```
 
-> This must be run on the **host** before starting any container.
+> Must be run on the **host** before starting any container.
 > `jetson_clocks` sets hardware clock registers — the container inherits
 > the host clock state. Without it, GPU idles at ~300 MHz → ~50 FPS
 > instead of 1017 MHz → 200+ FPS.
@@ -65,18 +77,23 @@ sudo jetson_clocks
 ### 4. Build the image
 
 ```bash
-# From repo root — must be built on Jetson (ARM64, TRT engines are device-specific)
+# From repo root — must be built on Jetson (ARM64 only)
 cd ~/EdgeDrive-Perception
 docker build -t edgedrive:latest -f docker/Dockerfile .
 ```
 
-Expected build time: ~10-15 minutes (pulls base image + compiles C++ from source).
+### 5. Verify
+
+```bash
+docker images edgedrive
+# edgedrive   latest   xxxx   ~10GB
+```
 
 ---
 
 ## Running
 
-All commands run from the repo root:
+All commands from repo root:
 
 ```bash
 cd ~/EdgeDrive-Perception
@@ -85,12 +102,14 @@ cd ~/EdgeDrive-Perception
 ### USB camera — detection only
 
 ```bash
+sudo jetson_clocks
 docker compose -f docker/docker-compose.yml run --rm camera
 ```
 
 ### USB camera — detection + BEV
 
 ```bash
+sudo jetson_clocks
 docker compose -f docker/docker-compose.yml run --rm camera-bev
 ```
 
@@ -123,9 +142,9 @@ VIDEO=tokyo.mp4 docker compose -f docker/docker-compose.yml run --rm save-bev
 ### Benchmark
 
 ```bash
-# Requires jetson_clocks on host first
 sudo jetson_clocks
 docker compose -f docker/docker-compose.yml run --rm benchmark
+# Expected: ~193 FPS, 5.1ms, ~12.2W
 ```
 
 ---
@@ -134,7 +153,7 @@ docker compose -f docker/docker-compose.yml run --rm benchmark
 
 | Variable | Default | Description |
 |---|---|---|
-| `VIDEO` | `nuscenes_clip.mp4` | Video file in `test_videos/` |
+| `VIDEO` | `nuscenes_clip.mp4` | Video filename in `test_videos/` |
 | `THRESH` | `0.3` | Detection score threshold |
 | `DURATION` | `60` | Benchmark duration (seconds) |
 
@@ -155,58 +174,68 @@ VIDEO=tokyo.mp4 THRESH=0.5 docker compose -f docker/docker-compose.yml run --rm 
 | `calibration.yaml` | `/workspace/calibration.yaml` | read-only |
 | `output/` | `/workspace/output` | read-write |
 
-Engines and videos are **not baked into the image** — they are mounted
-at runtime. Swap engines without rebuilding.
+Engines and videos are **not baked into the image** — mounted at runtime.
+Swap engines or videos without rebuilding the image.
 
 ---
 
-## Multi-stage Build
+## Multi-Stage Build
 
 ```
-Stage 1 — builder (nvcr.io/nvidia/l4t-tensorrt:r36.3.0-devel):
-  Installs cmake, g++, OpenCV dev, GStreamer dev
-  Compiles C++ pipeline from source
-  Output: /build/build/edgedrive
+Stage 1 — builder (l4t-jetpack:r36.4.0):
+  Installs: cmake, ninja, g++, GStreamer dev headers
+  Compiles: edgedrive C++ binary from source
+  Note: -Wl,--allow-shlib-undefined skips missing Jetson BSP libs
+        (libnvdla_compiler.so, libnvcudla.so) at link time — they
+        are injected at runtime by --runtime nvidia from the host
 
-Stage 2 — runtime (nvcr.io/nvidia/l4t-tensorrt:r36.3.0-runtime):
-  Installs OpenCV runtime, GStreamer runtime only
-  Copies edgedrive binary from builder
-  Final image: ~2-3 GB (vs ~8 GB builder)
+Stage 2 — runtime (l4t-jetpack:r36.4.0):
+  Installs: GStreamer runtime plugins only
+  Copies:   edgedrive binary from builder stage
+  Result:   same base image, binary + plugins only added on top
 ```
+
+### Why 10GB?
+
+`l4t-jetpack:r36.4.0` includes the full JetPack SDK (CUDA, TRT, cuDNN,
+OpenCV, all dev tools). Using a smaller runtime base (e.g. `ubuntu:22.04`)
+would require manually copying 20+ shared libraries — fragile and
+maintenance-heavy. 10GB is the practical tradeoff for a reliable,
+self-contained container.
 
 ---
 
 ## Troubleshooting
 
-**`docker: Error response from daemon: Unknown runtime specified nvidia`**
+**`Unknown runtime specified nvidia`**
 ```bash
 sudo nvidia-ctk runtime configure --runtime=docker --set-as-default
 sudo systemctl restart docker
 ```
 
-**`cannot connect to X server` (imshow fails)**
+**`cannot connect to X server`**
 ```bash
 xhost +local:docker
-# Then re-run the container
 ```
 
 **Low FPS (~50 instead of 200+)**
 ```bash
-# jetson_clocks not set — run on host before starting container
+# Run on host before starting container
 sudo jetson_clocks
 ```
 
 **`unable to start pipeline` (NVDEC warning)**
-Harmless — falls back to software decode automatically.
-NVDEC requires `/dev/nvhost-*` devices. Add to docker-compose if needed:
-```yaml
-devices:
-  - /dev/nvhost-ctrl:/dev/nvhost-ctrl
-  - /dev/nvhost-vic:/dev/nvhost-vic
-```
+Harmless — automatically falls back to software decode.
 
 **Engine not found**
-Engines are not in the image. Mount them or build on the host first:
+Engines are not in the image — build on host first:
 ```bash
 ./scripts/build_engine.sh int8
+```
+
+**Container exits immediately**
+Check the engine path is correct and weights/ is mounted:
+```bash
+docker compose -f docker/docker-compose.yml run --rm camera \
+    --engine weights/yolo26n_det_int8_raw.engine
 ```

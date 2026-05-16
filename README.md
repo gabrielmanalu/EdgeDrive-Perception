@@ -4,7 +4,7 @@ Edge AI perception pipeline for real-time autonomous driving on Jetson Orin Nano
 
 Covers the full pipeline from dataset preparation to edge deployment:
 camera detection, LiDAR 3D detection, sensor fusion, quantization,
-and TensorRT C++ deployment.
+TensorRT C++ deployment, and **Docker containerization**.
 
 Designed for low-cost edge hardware (~$260), achieving **202 FPS at 8.9W**
 in live camera deployment — under 10W at real-world 30 FPS workload.
@@ -20,8 +20,7 @@ This project explores those trade-offs by building a full perception pipeline
 optimized for edge deployment, where GPU resources are limited and
 real-time constraints are strict.
 
-This project focuses on real-world deployment constraints rather than
-maximizing benchmark accuracy.
+This project focuses on real-world deployment constraints—such as zero-copy memory management, INT8 quantization, and containerized deployment—rather than maximizing benchmark accuracy.
 
 ---
 
@@ -30,7 +29,7 @@ maximizing benchmark accuracy.
 ### Live Camera Inference — USB Webcam (202 FPS)
 
 > Recorded with phone camera. USB webcam pointed at Tokyo driving footage.
-> C++ TRT INT8 pipeline running on Jetson Orin Nano Super 8GB.
+> C++ TRT INT8 pipeline running inside a Docker container on Jetson Orin Nano Super 8GB.
 
 📹 **[Watch: Live Camera Demo](https://youtu.be/zx4OrOlAXBs)**
 
@@ -115,7 +114,7 @@ nuScenes Mini. Blue = LiDAR only | Green = Camera only | Red = Fused.
 │                 Quantization & Export                            │
 │   PTQ FP32→FP16→INT8  |  QAT  |  ONNX  |  TFLite  |  TensorRT    │
 ├──────────────────────────────────────────────────────────────────┤
-│              Jetson Orin Nano Super Deployment                   │
+│         Dockerized Jetson Orin Nano Super Deployment             │
 │     C++ TensorRT  |  202 FPS INT8  |  ~8.03W  |  Live Camera     │
 └──────────────────────────────────────────────────────────────────┘
 ```
@@ -462,8 +461,11 @@ python training/quantize.py --mode ptq --runs_dir ./runs
 cd ~/EdgeDrive-Perception
 docker build -t edgedrive:latest -f docker/Dockerfile .
 
-# Run live camera + BEV
-docker compose -f docker/docker-compose.yml run --rm camera-bev
+# Run live camera
+docker compose -f docker/docker-compose.yml run --rm camera
+
+# Run pre-recorded video
+docker compose -f docker/docker-compose.yml run --rm video
 
 # Run benchmark
 docker compose -f docker/docker-compose.yml run --rm benchmark
@@ -546,6 +548,9 @@ Key decisions documented:
 
 ## Key Design Decisions
 
+**Dockerized Production Architecture:**
+Deployment is separated into a lightweight production runtime container (`l4t-tensorrt`) and a planned R&D container (`ROS2 Humble`). This mirrors industry best practices for Over-The-Air (OTA) updates on edge devices, preventing dependency hell while keeping the production image footprint minimal.
+
 **YOLO26n over YOLOv8n for deployment:**
 YOLOv8n achieves higher mAP50 (0.671 vs 0.558) on small data, but
 YOLO26n's NMS-free head removes post-processing latency on Jetson,
@@ -611,7 +616,7 @@ deployment on Jetson is planned for the ROS2 integration phase.
 
 End-to-end autonomous driving perception stack built to demonstrate
 edge AI engineering capability — from dataset preparation and model
-training through quantization, sensor fusion, and Jetson deployment.
+training through quantization, sensor fusion, and Dockerized Jetson deployment.
 
 Developed on a ~$260 hardware budget (Jetson Orin Nano Super 8GB + USB webcam)
 using Google Colab for training. All code written from scratch on nuScenes,

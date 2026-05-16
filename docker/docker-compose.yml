@@ -1,0 +1,121 @@
+# ============================================================================
+# EdgeDrive Perception — Docker Compose
+# ============================================================================
+#
+# Prerequisites:
+#   sudo jetson_clocks          ← lock GPU to max clock BEFORE running
+#   xhost +local:docker         ← allow X11 display (for imshow window)
+#   docker build -t edgedrive:latest -f docker/Dockerfile .
+#
+# Usage:
+#   docker compose -f docker/docker-compose.yml run --rm camera
+#   docker compose -f docker/docker-compose.yml run --rm camera-bev
+#   docker compose -f docker/docker-compose.yml run --rm video
+#   docker compose -f docker/docker-compose.yml run --rm video-bev
+#   docker compose -f docker/docker-compose.yml run --rm save
+#   docker compose -f docker/docker-compose.yml run --rm benchmark
+#
+# Environment variables:
+#   VIDEO   — video filename in test_videos/ (default: nuscenes_clip.mp4)
+#   THRESH  — score threshold              (default: 0.3)
+#   DURATION— benchmark duration seconds   (default: 60)
+#
+# Note on jetson_clocks:
+#   Without sudo jetson_clocks, GPU idles at ~300 MHz.
+#   jetson_clocks locks GPU at 1017 MHz → 200+ FPS.
+#   Must be run on the HOST before docker run — it affects hardware clocks,
+#   not the container environment. The container inherits host clock state.
+# ============================================================================
+
+name: edgedrive
+
+x-base: &base
+  image: edgedrive:latest
+  runtime: nvidia
+  environment:
+    - NVIDIA_VISIBLE_DEVICES=all
+    - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility,display
+    - DISPLAY=${DISPLAY}
+  network_mode: host
+  restart: "no"
+  volumes:
+    - ../weights:/workspace/weights:ro
+    - ../test_images:/workspace/test_images:ro
+    - ../test_videos:/workspace/test_videos:ro
+    - ../calibration.yaml:/workspace/calibration.yaml:ro
+    - ../output:/workspace/output
+    - /tmp/.X11-unix:/tmp/.X11-unix
+
+services:
+
+  # ── USB camera — detection only ───────────────────────────────────────────
+  camera:
+    <<: *base
+    devices:
+      - /dev/video0:/dev/video0
+    command: >
+      --engine weights/yolo26n_det_int8_raw.engine
+      --camera 0
+      --threshold ${THRESH:-0.3}
+
+  # ── USB camera — detection + BEV ─────────────────────────────────────────
+  camera-bev:
+    <<: *base
+    devices:
+      - /dev/video0:/dev/video0
+    command: >
+      --engine weights/yolo26n_det_int8_raw.engine
+      --camera 0
+      --threshold ${THRESH:-0.3}
+      --bev
+
+  # ── Pre-recorded video — detection only ───────────────────────────────────
+  video:
+    <<: *base
+    command: >
+      --engine weights/yolo26n_det_int8_raw.engine
+      --video test_videos/${VIDEO:-nuscenes_clip.mp4}
+      --threshold ${THRESH:-0.3}
+
+  # ── Pre-recorded video — detection + BEV ──────────────────────────────────
+  video-bev:
+    <<: *base
+    command: >
+      --engine weights/yolo26n_det_int8_raw.engine
+      --video test_videos/${VIDEO:-nuscenes_clip.mp4}
+      --threshold ${THRESH:-0.3}
+      --bev
+
+  # ── Save annotated video (no display) ─────────────────────────────────────
+  save:
+    <<: *base
+    command: >
+      --engine weights/yolo26n_det_int8_raw.engine
+      --video test_videos/${VIDEO:-nuscenes_clip.mp4}
+      --threshold ${THRESH:-0.3}
+      --no-display
+      --no-loop
+      --save-video output/demo_annotated.mp4
+
+  # ── Save BEV side-by-side video (no display) ──────────────────────────────
+  save-bev:
+    <<: *base
+    command: >
+      --engine weights/yolo26n_det_int8_raw.engine
+      --video test_videos/${VIDEO:-nuscenes_clip.mp4}
+      --threshold ${THRESH:-0.3}
+      --no-display
+      --no-loop
+      --save-video output/demo_bev.mp4
+      --bev
+
+  # ── Benchmark (no display, jetson_clocks required on host) ────────────────
+  benchmark:
+    <<: *base
+    command: >
+      --engine weights/yolo26n_det_int8_raw.engine
+      --benchmark
+      --images test_images
+      --duration ${DURATION:-60}
+      --threshold ${THRESH:-0.3}
+      --no-display

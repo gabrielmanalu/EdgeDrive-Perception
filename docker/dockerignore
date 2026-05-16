@@ -1,0 +1,39 @@
+# Large data files — mount at runtime instead
+weights/
+test_images/
+test_videos/
+calibration_images/
+data/
+output/
+logs/
+
+# Git
+.git/
+.gitignore
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Build artifacts
+deployment/build/
+*.egg-info/
+
+# Notebooks
+notebooks/
+
+# Docs (not needed in container)
+docs/
+benchmarks/
+scripts/
+
+# Fusion Python (not in container)
+fusion/
+training/
+solutions/
+
+# OS
+.DS_Store
+Thumbs.db

@@ -6,7 +6,7 @@ Covers the full pipeline from dataset preparation to edge deployment:
 camera detection, LiDAR 3D detection, sensor fusion, quantization,
 and TensorRT C++ deployment.
 
-Designed for low-cost edge hardware (~$260), achieving **202 FPS at 8.03W**
+Designed for low-cost edge hardware (~$260), achieving **202 FPS at 8.9W**
 in live camera deployment — under 10W at real-world 30 FPS workload.
 Peak stress-test throughput: 193 FPS at 12.2W (15.8 FPS/W).
 
@@ -346,51 +346,66 @@ EdgeDrive-Perception/
 │   └── README.md
 ├── deployment/            ← Jetson TensorRT C++ pipeline
 │   ├── CMakeLists.txt
-│   ├── Dockerfile
-│   ├── docker-compose.yml
-│   ├── README.md
+│   ├── README.md          ← build + run instructions
 │   ├── include/
-│   │   ├── trt_engine.hpp
-│   │   ├── yolo26_decoder.hpp
-│   │   └── profiler.hpp
+│   │   ├── trt_engine.hpp           ← TRT inference + UMA zero-copy
+│   │   ├── yolo26_decoder.hpp       ← raw [1,12,8400] + end2end decoder
+│   │   ├── camera_capture.hpp       ← USB / CSI / video / NVDEC / BEV
+│   │   ├── bev_visualizer.hpp       ← ground plane BEV projection
+│   │   ├── profiler.hpp             ← split timers (pre/TRT/post)
+│   │   ├── heatmap_generator.hpp    ← detection frequency heatmap
+│   │   ├── object_counter.hpp       ← line/zone crossing counter
+│   │   ├── speed_estimator.hpp      ← centroid tracker + km/h
+│   │   ├── segmentation_decoder.hpp ← YOLO26n-seg mask decoder
+│   │   └── preprocessor.cuh         ← CUDA letterbox kernel
 │   └── src/
-│       ├── main.cpp            ← benchmark + camera mode entry point
-│       ├── trt_engine.cpp      ← TRT inference, UMA zero-copy
-│       ├── yolo26_decoder.cpp  ← raw [1,12,8400] + end2end decoder
-│       ├── profiler.cpp        ← split timers (pre/TRT/post)
-│       └── camera_capture.cpp  ← live camera
-│       ├── late_fusion.cpp
-│       ├── bev_visualizer.cpp
-│       ├── object_counter.cpp
-│       ├── speed_estimator.cpp
-│       ├── segmentation_decoder.cpp
-│       ├── heatmap_generator.cpp
-│       ├── pointpillars_decoder.cpp
-│       └── preprocessor.cu
+│       ├── main.cpp                 ← entry point, CLI args
+│       ├── trt_engine.cpp           ← TRT engine, enqueueV3, UMA
+│       ├── yolo26_decoder.cpp       ← cxcywh decode, NMS, draw
+│       ├── camera_capture.cpp       ← capture loop, NVDEC, BEV, HUD
+│       ├── bev_visualizer.cpp       ← range rings, ego car, projection
+│       ├── profiler.cpp             ← rolling window stats
+│       ├── heatmap_generator.cpp    ← Gaussian accumulator (ref)
+│       ├── object_counter.cpp       ← line crossing counter (ref)
+│       ├── speed_estimator.cpp      ← displacement → km/h (ref)
+│       ├── segmentation_decoder.cpp ← mask coefficients × protos (ref)
+│       ├── preprocessor.cu          ← CUDA letterbox kernel (ref)
+│       ├── late_fusion.cpp          ← camera-LiDAR fusion (⬜ WIP)
+│       └── pointpillars_decoder.cpp ← LiDAR 3D decoder (⬜ WIP)
+├── docker/                ← Container deployment
+│   ├── Dockerfile         ← multi-stage build (builder + runtime)
+│   ├── docker-compose.yml ← all run modes (camera/video/benchmark)
+│   ├── .dockerignore
+│   └── README.md          ← build + run instructions
 ├── notebooks/
-│   └── development_walkthrough.ipynb
+│   └── development_walkthrough.ipynb  ← Complete Google Colab notebook
 ├── scripts/
-│   ├── build_engine.sh    ← export FP16/INT8 TRT engines
-│   ├── run_benchmark.sh   ← full benchmark suite
-│   └── plot_results.py    ← benchmark visualization
+│   ├── build_engine.sh         ← export FP16/INT8 TRT engines
+│   ├── run_benchmark.sh        ← full benchmark suite
+│   ├── test_camera.sh          ← all camera/video/BEV test modes
+│   ├── make_test_video.py      ← stitch nuScenes images → .mp4
+│   ├── hardware_monitor.py     ← real-time Jetson hardware monitor
+│   └── plot_results.py         ← benchmark visualization
 ├── benchmarks/
 │   ├── README.md          ← summary table
+│   ├── plots/
+│   │   └── benchmark_results.png
 │   └── results/
 │       ├── jetson_python.md      ← Python FP32/FP16/INT8
-│       ├── jetson_cpp.md         ← C++ TRT INT8 + power
-│       └── quantization_colab.md ← TFLite accuracy
+│       ├── jetson_cpp.md         ← C++ TRT INT8 + power/thermal
+│       └── quantization_colab.md ← TFLite accuracy results
 ├── docs/
-│   ├── architecture.md           ← system design
+│   ├── architecture.md           ← full pipeline + UMA + quantization
 │   ├── benchmark_report.md       ← findings + interpretation
-│   ├── yolo26_vs_yolov8.md       ← model selection
-│   ├── nms_free_analysis.md      ← decoder debug trail
-│   ├── optimization_log.md       ← 8 optimizations, before/after
-│   ├── sensor_fusion_analysis.md ← fusion design + results
+│   ├── yolo26_vs_yolov8.md       ← model selection rationale
+│   ├── nms_free_analysis.md      ← decoder debug trail (5 bugs)
+│   ├── optimization_log.md       ← 11 optimizations + 1 rejected
+│   ├── sensor_fusion_analysis.md ← late fusion design + results
 │   ├── class_distribution.md     ← dataset imbalance analysis
 │   └── solutions_on_edge.md      ← Solutions API evaluation
 ├── weights/               ← not in repo (see Pre-trained Weights)
-├── calibration.yaml       ← INT8 calibration config
-└── calibration_images/    ← 81 nuScenes val images for INT8
+├── calibration.yaml       ← INT8 calibration config (81 images)
+└── calibration_images/    ← nuScenes val images for INT8 calibration
 ```
 
 ---
@@ -441,21 +456,33 @@ python training/quantize.py --mode ptq --runs_dir ./runs
 
 ### 6. Jetson Deployment
 
+**Option A — Docker (recommended):**
 ```bash
-# Export TensorRT engines on Jetson (must build on target hardware)
-python3 -c "
-from ultralytics import YOLO
-model = YOLO('weights/yolo26n_det.pt')
-model.export(format='engine', device=0, half=True)   # FP16
-model.export(format='engine', device=0, int8=True,
-             data='calibration.yaml')                  # INT8
-"
+# Build image on Jetson (~10-15 min, compiles C++ inside container)
+cd ~/EdgeDrive-Perception
+docker build -t edgedrive:latest -f docker/Dockerfile .
 
-# C++ pipeline (see deployment/README.md)
-cd deployment && mkdir build && cd build
-cmake .. && make -j4
-./edgedrive --model ../weights/yolo26n_det_int8.engine --camera 0
+# Run live camera + BEV
+docker compose -f docker/docker-compose.yml run --rm camera-bev
+
+# Run benchmark
+docker compose -f docker/docker-compose.yml run --rm benchmark
 ```
+
+**Option B — Native (no Docker):**
+```bash
+# Export TensorRT engines (must build on target Jetson)
+./scripts/build_engine.sh all
+
+# Build C++ pipeline
+cd deployment && mkdir -p build && cd build
+cmake .. && make -j4
+
+# Run
+./edgedrive --engine weights/yolo26n_det_int8_raw.engine --camera 0 --bev
+```
+
+See [`deployment/README.md`](deployment/README.md) and [`docker/README.md`](docker/README.md) for full instructions.
 
 ---
 
@@ -478,7 +505,7 @@ Training time: ~70 min per model on Tesla T4 (Google Colab).
 |---|---|
 | [`docs/architecture.md`](docs/architecture.md) | Full pipeline, UMA memory model, quantization flow |
 | [`docs/yolo26_vs_yolov8.md`](docs/yolo26_vs_yolov8.md) | Model selection rationale with data |
-| [`docs/nms_free_analysis.md`](docs/nms_free_analysis.md) | NMS-free head debug trail — JetPack 6 INT8 issue, decoder bugs |
+| [`docs/nms_free_analysis.md`](docs/nms_free_analysis.md) | NMS-free head debug trail — 5 bugs found and fixed |
 | [`docs/sensor_fusion_analysis.md`](docs/sensor_fusion_analysis.md) | Late fusion design, parameter choices, sample results |
 | [`docs/class_distribution.md`](docs/class_distribution.md) | nuScenes class imbalance and impact on model confidence |
 | [`docs/solutions_on_edge.md`](docs/solutions_on_edge.md) | Ultralytics Solutions API evaluation, speed estimation limits |
@@ -488,10 +515,17 @@ Training time: ~70 min per model on Tesla T4 (Google Colab).
 | Document | Description |
 |---|---|
 | [`docs/benchmark_report.md`](docs/benchmark_report.md) | Summary, key findings, interpretation |
-| [`docs/optimization_log.md`](docs/optimization_log.md) | 8 optimizations with before/after measurements |
+| [`docs/optimization_log.md`](docs/optimization_log.md) | 11 optimizations + 1 rejected, all with before/after data |
 | [`benchmarks/results/jetson_python.md`](benchmarks/results/jetson_python.md) | Python FP32/FP16/INT8 full breakdown |
 | [`benchmarks/results/jetson_cpp.md`](benchmarks/results/jetson_cpp.md) | C++ TRT INT8 full breakdown + power/thermal |
 | [`benchmarks/results/quantization_colab.md`](benchmarks/results/quantization_colab.md) | TFLite quantization accuracy results |
+
+### Deployment
+
+| Document | Description |
+|---|---|
+| [`deployment/README.md`](deployment/README.md) | C++ build, all CLI args, BEV, Solutions reference |
+| [`docker/README.md`](docker/README.md) | Docker build, all run modes, volume mounts |
 
 ### Development Walkthrough
 

@@ -186,27 +186,156 @@ C++ decoder:            <0.1ms (direct memory access, no Python objects)
 
 ---
 
+## O9 — Letterbox Inverse Transform Fix
+
+**Date:** 2026-05-14
+**Change:** Replaced simple `scale_x/scale_y` coordinate unscaling with
+correct letterbox inverse transform using `gain` and `pad_x/pad_y`.
+
+```cpp
+// Before (wrong for non-square inputs):
+float scale_x = orig_w / 640.0f;
+float scale_y = orig_h / 640.0f;
+det.x1 = x1 * scale_x;
+det.y1 = y1 * scale_y;  // ignores letterbox padding
+
+// After (correct):
+float gain  = std::min(640.0f / orig_w, 640.0f / orig_h);
+float pad_x = (640.0f - orig_w * gain) / 2.0f;
+float pad_y = (640.0f - orig_h * gain) / 2.0f;
+det.x1 = (x1 - pad_x) / gain;
+det.y1 = (y1 - pad_y) / gain;
+```
+
+**Why it matters:**
+
+For 1280×720 input letterboxed to 640×640:
+```
+gain  = min(640/1280, 640/720) = 0.5
+pad_y = (640 - 720×0.5) / 2   = 140px
+
+Old: y1 × (720/640) = y1 × 1.125  → ignores 140px padding
+New: (y1 - 140) / 0.5             → removes padding first, then unscales
+```
+
+Old code worked correctly only when input and output had the same aspect
+ratio (e.g. nuScenes 1600×900 → large padding, but proportionally less).
+Manifested as vertical box offset on 1280×720 USB camera / video input.
+
+---
+
+## O10 — NVDEC Hardware Video Decode
+
+**Date:** 2026-05-14
+**Change:** Replaced default software H.264 decode (`cap.open(path)`) with
+NVDEC hardware decode via GStreamer `nvv4l2decoder` pipeline.
+
+```
+Before: software decode (default OpenCV)
+  FPS: ~130 | CPU H.264 decode: ~3-4ms/frame
+
+After: NVDEC hardware decode (nvv4l2decoder)
+  FPS: ~170-195 | NVDEC decode: <0.5ms/frame
+```
+
+**GStreamer pipeline:**
+```
+filesrc → qtdemux → h264parse → nvv4l2decoder → nvvidconv → appsink
+                                 ↑
+                           NVDEC chip (Jetson VPU)
+```
+
+**Remaining gap vs USB camera (202 FPS):**
+
+NVDEC and TRT share LPDDR5 UMA bandwidth simultaneously:
+```
+USB camera:    camera chip decodes independently → TRT: 3.7ms
+NVDEC video:   NVDEC + TRT contend for UMA      → TRT: 4.1ms (+0.4ms)
+```
+Hardware ceiling — not solvable without pipelining.
+
+---
+
+## O_rejected — Decode/Infer Pipeline Threading
+
+**Date:** 2026-05-14
+**Attempted:** Overlap NVDEC decode with TRT inference using a background
+decode thread + mutex/condvar double buffer.
+
+```
+Intended: decode N+1 while TRT processes N → hide NVDEC latency
+Result:   170 FPS → 150 FPS (worse)
+```
+
+**Why it failed:**
+
+At 200 FPS, the synchronization overhead (mutex lock/unlock, condvar
+wait/notify) costs ~0.5-1ms per frame — more than the contention it
+was trying to eliminate. Thread context switching at this frequency
+adds CPU cache pressure on top.
+
+```
+mutex/condvar overhead at 200 FPS: ~0.5ms/frame
+NVDEC/TRT contention:             ~0.4ms/frame
+Net: threading costs more than it saves
+```
+
+Reverted. Threading would help at lower FPS (e.g. 4K input where
+NVDEC decode costs ~5ms) but not at 720p/200 FPS.
+
+---
+
+## O11 — Input Resolution Effect
+
+**Date:** 2026-05-14
+**Observation:** USB camera (1280×720) runs faster than nuScenes
+benchmark (1600×900) despite same engine.
+
+```
+nuScenes benchmark (1600×900): Pre=1.7ms → 193 FPS
+USB camera (1280×720):         Pre=1.1ms → 202 FPS
+```
+
+**Why:**
+```
+Letterbox resize work scales with input resolution:
+  1600×900: 1,440,000 pixels to resize + copy
+  1280×720:   921,600 pixels to resize + copy
+  Ratio: 921600/1440000 = 0.64 → ~36% less work → ~0.6ms faster
+```
+
+Not an optimization we applied — a natural benefit of lower resolution
+camera input. Relevant for production: matching camera resolution to
+model input (640×640) would eliminate letterbox entirely → ~0ms preprocessing.
+
+---
+
 ## Summary: Total Gains
 
 ```
 Starting point: Python FP32 baseline
-  FPS: 29.1 | Latency: 34.0ms
+  FPS: 29.1 | Latency: 34.0ms | Power: ~9.9W
 
-After all optimizations: C++ TRT INT8
-  FPS: 193.3 | Latency: 5.1ms
+Best benchmark (C++ TRT INT8, jetson_clocks):
+  FPS: 193.3 | Latency: 5.1ms | Power: ~12.2W
+  +564% FPS, -85% latency
 
-Total improvement:
-  +564% FPS
-  -85% latency
+Best real-world (C++ TRT INT8, USB camera 720p):
+  FPS: 202.6 | Latency: 4.8ms | Power: ~8.03W
+  +596% FPS, -86% latency, under 10W
 ```
 
-| Optimization | Primary Effect |
-|---|---|
-| O1: TRT INT8 | -87% inference latency |
-| O2: C++ pipeline | +146% FPS vs Python TRT |
-| O3: UMA zero-copy | eliminates cudaMemcpy |
-| O4: pre-alloc Mat | eliminates per-frame heap |
-| O5: setTo reuse | further reduces allocation |
-| O6: enqueueV3 | async-ready for pipelining |
-| O7: split profiler | revealed preprocessing bottleneck |
-| O8: custom decoder | -97% postprocess time |
+| Optimization | Primary Effect | Measured |
+|---|---|---|
+| O1: TRT INT8 | -87% inference latency | 27.6ms → 3.5ms |
+| O2: C++ pipeline | +146% FPS vs Python TRT | 78.5 → 193 FPS |
+| O3: UMA zero-copy | eliminates cudaMemcpy | -1-2ms estimated |
+| O4: pre-alloc Mat | eliminates per-frame heap | 193 heap allocs/s eliminated |
+| O5: setTo reuse | further reduces allocation | included in O4 |
+| O6: enqueueV3 | async-ready for pipelining | future benefit |
+| O7: split profiler | revealed preprocessing bottleneck | insight only |
+| O8: custom decoder | -97% postprocess time | 3.2ms → ~0.1ms |
+| O9: letterbox fix | corrects box position on non-square input | correctness |
+| O10: NVDEC decode | -70% video decode overhead | 130 → 170-195 FPS |
+| O_rejected: threading | attempted, reverted | 170 → 150 FPS (worse) |
+| O11: 720p input | faster preprocessing | 1.7ms → 1.1ms |

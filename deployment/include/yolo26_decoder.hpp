@@ -60,10 +60,11 @@ private:
     std::vector<Detection> decodeRaw(
         const float* data, int orig_w, int orig_h);
 
-    // Greedy class-aware NMS
+    // Greedy class-agnostic NMS
     std::vector<Detection> nms(std::vector<Detection>& dets) const;
 
-    // nuScenes class names — must match calibration.yaml order
+public:
+    // nuScenes class names and colors — public for BEVVisualizer
     static const std::vector<std::string> CLASS_NAMES;
     static const std::vector<cv::Scalar>  CLASS_COLORS;
 };

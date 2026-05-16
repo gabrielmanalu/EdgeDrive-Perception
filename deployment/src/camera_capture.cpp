@@ -24,6 +24,7 @@
  */
 
 #include "camera_capture.hpp"
+#include "bev_visualizer.hpp"
 #include "profiler.hpp"
 
 #include <opencv2/opencv.hpp>
@@ -234,6 +235,14 @@ void runCamera(TRTEngine& engine, YOLO26Decoder& decoder,
         }
     }
 
+    // ── BEV visualizer (optional) ─────────────────────────────────────────────
+    std::unique_ptr<BEVVisualizer> bev;
+    if (cfg.show_bev) {
+        // Pass empty K — BEVVisualizer estimates intrinsics from resolution
+        bev = std::make_unique<BEVVisualizer>(cv::Mat());
+        std::cout << "BEV visualizer enabled." << std::endl;
+    }
+
     // ── Inference loop ────────────────────────────────────────────────────────
 
     std::cout << "\n=== Live Camera Mode ===" << std::endl;
@@ -248,9 +257,8 @@ void runCamera(TRTEngine& engine, YOLO26Decoder& decoder,
 
     while (g_running) {
 
-        // Grab latest frame
+        // Read next frame
         if (!cap.read(frame) || frame.empty()) {
-            // End of video file — loop if enabled
             if (!cfg.video_path.empty() && cfg.loop_video) {
                 cap.set(cv::CAP_PROP_POS_FRAMES, 0);
                 cap.read(frame);
@@ -285,17 +293,24 @@ void runCamera(TRTEngine& engine, YOLO26Decoder& decoder,
                     engine.lastTRTMs(),
                     static_cast<int>(dets.size()));
 
+            cv::Mat display_frame;
+            if (bev) {
+                cv::Mat bev_frame = bev->render(dets, frame.cols, frame.rows);
+                display_frame = bev->sideBySide(annotated, bev_frame);
+            } else {
+                display_frame = annotated;
+            }
+
             if (!cfg.no_display) {
-                cv::imshow("EdgeDrive Perception", annotated);
+                cv::imshow("EdgeDrive Perception", display_frame);
                 int key = cv::waitKey(1);
-                if (key == 'q' || key == 27) break;  // q or ESC
+                if (key == 'q' || key == 27) break;
             }
 
             if (writer.isOpened())
-                writer.write(annotated);
+                writer.write(display_frame);
         }
 
-        // Console stats every 30 frames
         profiler.printStats(30);
     }
 

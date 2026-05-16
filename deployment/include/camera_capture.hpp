@@ -18,6 +18,7 @@ struct CameraConfig {
     bool        no_display   = false;    // headless mode (no imshow)
     std::string save_video   = "";       // path to save output video (empty = no save)
     int         warmup_frames = 10;      // discard first N frames
+    bool        show_bev     = false;    // show bird's eye view
 };
 
 /**

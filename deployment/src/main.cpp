@@ -41,6 +41,7 @@
 #include "trt_engine.hpp"
 #include "yolo26_decoder.hpp"
 #include "camera_capture.hpp"
+#include "bev_visualizer.hpp"
 #include "profiler.hpp"
 
 #include <iostream>
@@ -68,6 +69,7 @@ struct Args {
     bool        benchmark    = false;
     bool        no_display   = false;
     bool        no_loop      = false;
+    bool        bev          = false;
 };
 
 Args parseArgs(int argc, char** argv) {
@@ -85,6 +87,7 @@ Args parseArgs(int argc, char** argv) {
         else if (arg == "--benchmark")                args.benchmark    = true;
         else if (arg == "--no-display")               args.no_display   = true;
         else if (arg == "--no-loop")                  args.no_loop      = true;
+        else if (arg == "--bev")                      args.bev          = true;
     }
     return args;
 }
@@ -213,6 +216,7 @@ int main(int argc, char** argv) {
             cfg.no_display  = args.no_display;
             cfg.save_video  = args.save_video;
             cfg.loop_video  = !args.no_loop;
+            cfg.show_bev    = args.bev;
 
             if (!args.video_path.empty()) {
                 cfg.video_path = args.video_path;

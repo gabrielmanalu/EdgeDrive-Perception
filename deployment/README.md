@@ -26,17 +26,32 @@ deployment/
 ├── CMakeLists.txt
 ├── README.md
 ├── include/
-│   ├── trt_engine.hpp       ← TRT inference + UMA zero-copy
-│   ├── yolo26_decoder.hpp   ← raw [1,12,8400] + end2end decoder
-│   ├── camera_capture.hpp   ← USB / CSI / video / NVDEC
-│   └── profiler.hpp         ← split timers (pre/TRT/post)
+│   ├── trt_engine.hpp           ← TRT inference + UMA zero-copy
+│   ├── yolo26_decoder.hpp       ← raw [1,12,8400] + end2end decoder
+│   ├── camera_capture.hpp       ← USB / CSI / video / NVDEC / BEV
+│   ├── bev_visualizer.hpp       ← ground plane BEV projection
+│   ├── profiler.hpp             ← split timers (pre/TRT/post)
+│   ├── heatmap_generator.hpp    ← detection frequency heatmap
+│   ├── object_counter.hpp       ← line/zone crossing counter
+│   ├── speed_estimator.hpp      ← centroid tracker + km/h estimator
+│   ├── segmentation_decoder.hpp ← YOLO26n-seg mask decoder
+│   └── preprocessor.cuh         ← CUDA letterbox kernel (optional)
 └── src/
-    ├── main.cpp             ← entry point, argument parsing
-    ├── trt_engine.cpp
-    ├── yolo26_decoder.cpp
-    ├── camera_capture.cpp
-    └── profiler.cpp
+    ├── main.cpp                 ← entry point, argument parsing
+    ├── trt_engine.cpp           ← TRT engine, enqueueV3, UMA buffers
+    ├── yolo26_decoder.cpp       ← cxcywh decode, NMS, draw
+    ├── camera_capture.cpp       ← capture loop, NVDEC, BEV, HUD
+    ├── bev_visualizer.cpp       ← range rings, ego car, projection
+    ├── profiler.cpp             ← rolling window, FPS/pre/TRT stats
+    ├── heatmap_generator.cpp    ← Gaussian accumulator, COLORMAP_JET
+    ├── object_counter.cpp       ← centroid tracker, line crossing
+    ├── speed_estimator.cpp      ← displacement → m/s → km/h, trail
+    ├── segmentation_decoder.cpp ← mask coefficients × prototypes
+    ├── preprocessor.cu          ← CUDA letterbox + BGR→RGB + CHW
+    ├── late_fusion.cpp          ← camera-LiDAR BEV matching (⬜ WIP)
+    └── pointpillars_decoder.cpp ← LiDAR 3D box decoder (⬜ WIP)
 ```
+
 
 ---
 
@@ -273,6 +288,142 @@ Decode:
 # Create test video from nuScenes images
 python3 scripts/make_test_video.py
 ```
+
+---
+
+## BEV Visualization
+
+Split-screen mode showing camera view + Bird's Eye View projection.
+
+```bash
+# Live camera + BEV
+./deployment/build/edgedrive \
+    --engine weights/yolo26n_det_int8_raw.engine \
+    --camera 0 --threshold 0.3 --bev
+
+# Video + BEV
+./deployment/build/edgedrive \
+    --engine weights/yolo26n_det_int8_raw.engine \
+    --video driving.mp4 --threshold 0.3 --bev
+
+# Save BEV output
+./scripts/test_camera.sh bev-save
+```
+
+**How it works:**
+
+Ground plane projection using pinhole camera model:
+
+```
+Bottom-center of box (u, v) → ground plane:
+  Z = cam_h × fy / (v - cy)   [forward distance, meters]
+  X = (u - cx) × Z / fx       [lateral offset, meters]
+
+Default: cam_h=1.2m, fx=640 (90° HFOV USB webcam estimate)
+Range:   15m forward, 10m lateral
+```
+
+Distances are **estimates** — no metric accuracy without camera
+calibration. Confirmed limitation documented in
+[`docs/sensor_fusion_analysis.md`](../docs/sensor_fusion_analysis.md).
+
+---
+
+## Ultralytics Solutions — C++ Reference Implementations
+
+C++ equivalents of the Python solutions used in Colab development.
+Not yet wired into `main.cpp` — reference implementations only.
+
+### HeatmapGenerator
+
+Accumulates a Gaussian blob at each detection center across frames.
+
+```cpp
+#include "heatmap_generator.hpp"
+
+HeatmapGenerator hm(1280, 720, /*decay=*/0.995f, /*sigma=*/20);
+while (running) {
+    auto dets = decoder.decode(...);
+    hm.update(dets);
+    cv::Mat vis = hm.render(frame, 0.6f);  // 60% heatmap overlay
+    cv::imshow("Heatmap", vis);
+}
+```
+
+### ObjectCounter
+
+Counts objects crossing a defined line (IN/OUT) or within a polygon zone.
+
+```cpp
+#include "object_counter.hpp"
+
+ObjectCounter counter;
+// Horizontal counting line at y=360
+counter.setLine(cv::Point(0, 360), cv::Point(1280, 360));
+
+while (running) {
+    counter.update(dets);
+    cv::Mat vis = counter.draw(frame);
+    // counter.countIn(), counter.countOut()
+}
+```
+
+### SpeedEstimator
+
+Centroid-based tracker with pixel displacement → km/h conversion.
+
+```cpp
+#include "speed_estimator.hpp"
+
+// 50 px/m calibration, 30 FPS, 10-frame smoothing window
+SpeedEstimator estimator(50.0f, 30.0f, 10);
+
+while (running) {
+    estimator.update(dets);
+    cv::Mat vis = estimator.draw(frame);  // speed labels + trail
+}
+```
+
+**Note:** Assumes stationary camera. On moving vehicle, measures
+relative speed (object - ego). Subtract ego velocity from IMU/odometry
+for absolute speed. See [`docs/solutions_on_edge.md`](../docs/solutions_on_edge.md).
+
+### SegmentationDecoder
+
+Decodes YOLO26n-seg two-output format into binary masks.
+
+```cpp
+#include "segmentation_decoder.hpp"
+
+// Requires yolo26n_seg engine (two outputs)
+// output0: [1, 44, 8400]    detection + mask coefficients
+// output1: [1, 32, 160, 160] prototype masks
+SegmentationDecoder seg_decoder(0.3f, 0.3f);
+
+auto results = seg_decoder.decode(output0, output1, frame.cols, frame.rows);
+cv::Mat vis  = seg_decoder.draw(frame, results, 0.4f);
+```
+
+### CUDA Preprocessor (preprocessor.cu)
+
+GPU-side letterbox kernel — replaces CPU preprocessing.
+
+```cpp
+#include "preprocessor.cuh"
+
+// Replace CPU preprocessing in trt_engine.cpp with:
+launchLetterboxKernel(
+    d_bgr_input,   // uint8 BGR on device
+    d_float_chw,   // float32 RGB CHW on device
+    src_w, src_h,
+    640, 640,
+    114,           // pad value
+    stream_);
+```
+
+Expected: ~0.2ms vs 1.1ms CPU → useful for multi-camera pipelines.
+Not default because 1.1ms is not the bottleneck at 200 FPS.
+See [`docs/optimization_log.md`](../docs/optimization_log.md).
 
 ---
 

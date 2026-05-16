@@ -46,6 +46,7 @@ set(SOURCES
   src/yolo26_decoder.cpp
   src/profiler.cpp
   src/camera_capture.cpp
+  src/bev_visualizer.cpp
   src/main.cpp
 )
 

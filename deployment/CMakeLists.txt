@@ -62,6 +62,14 @@ target_link_libraries(edgedrive
   pthread
 )
 
+# Allow unresolved BSP symbols (libnvdla_compiler.so, libnvcudla.so)
+# These Jetson-specific libs are missing inside the build container but
+# are injected at runtime by --runtime nvidia from the host JetPack.
+# On native Jetson build this flag has no effect.
+target_link_options(edgedrive PRIVATE
+  -Wl,--allow-shlib-undefined
+)
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 message(STATUS "Build type : ${CMAKE_BUILD_TYPE}")
 message(STATUS "CUDA arch  : ${CMAKE_CUDA_ARCHITECTURES}")

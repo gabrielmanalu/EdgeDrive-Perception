@@ -53,33 +53,25 @@ CameraNode::CameraNode(const rclcpp::NodeOptions& options)
     det_pub_ = create_publisher<vision_msgs::msg::Detection2DArray>(
         "/detections/camera", 10);
 
-    // image_transport requires shared_from_this() — use a timer to defer
-    // until after the constructor returns and shared_ptr is valid
-    init_timer_ = create_wall_timer(
-        std::chrono::milliseconds(0),
-        [this]() {
-            init_timer_->cancel();
+    if (publish_viz_)
+        viz_pub_ = create_publisher<sensor_msgs::msg::Image>(
+            "/camera/annotated", 10);
 
-            auto img_transport = std::make_shared<image_transport::ImageTransport>(
-                shared_from_this());
+    if (publish_bev_)
+        bev_pub_ = create_publisher<sensor_msgs::msg::Image>(
+            "/camera/bev", 10);
 
-            if (publish_viz_)
-                viz_pub_ = img_transport->advertise("/camera/annotated", 1);
+    // ── Subscriber ────────────────────────────────────────────────────────────
+    // Explicit RELIABLE QoS — publisher must match
+    // (Python: QoSProfile(reliability=ReliabilityPolicy.RELIABLE, depth=10))
+    auto qos = rclcpp::QoS(rclcpp::KeepLast(10))
+                   .reliability(rclcpp::ReliabilityPolicy::Reliable);
 
-            if (publish_bev_)
-                bev_pub_ = img_transport->advertise("/camera/bev", 1);
+    image_sub_ = create_subscription<sensor_msgs::msg::Image>(
+        "/camera/image_raw", qos,
+        std::bind(&CameraNode::imageCallback, this, std::placeholders::_1));
 
-            image_sub_ = img_transport->subscribe(
-                "/camera/image_raw", 1,
-                std::bind(&CameraNode::imageCallback, this,
-                          std::placeholders::_1));
-
-            // Keep transport alive
-            img_transport_ = img_transport;
-
-            RCLCPP_INFO(get_logger(),
-                "CameraNode ready. Listening on /camera/image_raw");
-        });
+    RCLCPP_INFO(get_logger(), "CameraNode ready. Listening on /camera/image_raw");
 }
 
 // ── Image callback ────────────────────────────────────────────────────────────
@@ -116,10 +108,8 @@ void CameraNode::imageCallback(
     det_pub_->publish(det_msg);
 
     // ── Publish annotated image ───────────────────────────────────────────────
-    if (publish_viz_ && viz_pub_.getNumSubscribers() > 0) {
+    if (publish_viz_ && viz_pub_) {
         cv::Mat annotated = decoder_->draw(frame, dets);
-
-        // FPS overlay
         std::string fps_str = "FPS: " +
             std::to_string(static_cast<int>(profiler_->meanFPS())) +
             "  TRT: " +
@@ -131,15 +121,15 @@ void CameraNode::imageCallback(
 
         auto viz_msg = cv_bridge::CvImage(
             msg->header, "bgr8", annotated).toImageMsg();
-        viz_pub_.publish(viz_msg);
+        viz_pub_->publish(*viz_msg);
     }
 
     // ── Publish BEV ──────────────────────────────────────────────────────────
-    if (publish_bev_ && bev_ && bev_pub_.getNumSubscribers() > 0) {
+    if (publish_bev_ && bev_ && bev_pub_) {
         cv::Mat bev_img = bev_->render(dets, frame.cols, frame.rows);
         auto bev_msg = cv_bridge::CvImage(
             msg->header, "bgr8", bev_img).toImageMsg();
-        bev_pub_.publish(bev_msg);
+        bev_pub_->publish(*bev_msg);
     }
 
     // ── Log stats every 30 frames ─────────────────────────────────────────────

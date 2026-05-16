@@ -3,7 +3,6 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <vision_msgs/msg/detection2_d_array.hpp>
-#include <image_transport/image_transport.hpp>
 #include <cv_bridge/cv_bridge.h>
 
 #include "trt_engine.hpp"
@@ -61,19 +60,13 @@ private:
     std::unique_ptr<BEVVisualizer>  bev_;
     std::unique_ptr<Profiler>       profiler_;
 
-    // Deferred init timer (avoids bad_weak_ptr from shared_from_this in ctor)
-    rclcpp::TimerBase::SharedPtr init_timer_;
-
-    // Keep image_transport alive for the node's lifetime
-    std::shared_ptr<image_transport::ImageTransport> img_transport_;
-
     // Subscribers
-    image_transport::Subscriber image_sub_;
+    rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_;
 
     // Publishers
     rclcpp::Publisher<vision_msgs::msg::Detection2DArray>::SharedPtr det_pub_;
-    image_transport::Publisher                                        viz_pub_;
-    image_transport::Publisher                                        bev_pub_;
+    rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr             viz_pub_;
+    rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr             bev_pub_;
 
     // Callback
     void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg);

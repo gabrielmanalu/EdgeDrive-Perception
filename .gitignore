@@ -75,3 +75,6 @@ bags/
 # calibration_images/ ← 14MB, needed for INT8 engine build — DO NOT ignore
 # calibration.yaml    ← tiny config — DO NOT ignore
 # weights/.gitkeep    ← placeholder so folder exists — DO NOT ignore
+
+# ROS2 bags (too large for git — generate with nuscenes_to_ros2bag.py)
+bags/

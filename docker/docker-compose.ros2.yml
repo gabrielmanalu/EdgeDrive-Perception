@@ -59,6 +59,23 @@ services:
       -p publish_viz:=true
       -p publish_bev:=false
 
+  # ── Camera node subscribed to nuScenes bag topic ───────────────────────────
+  camera-node-bag:
+    <<: *base
+    devices:
+      - /dev/nvmap:/dev/nvmap
+      - /dev/nvhost-ctrl-gpu:/dev/nvhost-ctrl-gpu
+      - /dev/nvhost-gpu:/dev/nvhost-gpu
+      - /dev/nvhost-as-gpu:/dev/nvhost-as-gpu
+      - /dev/nvhost-tsg-gpu:/dev/nvhost-tsg-gpu
+    command: >
+      ros2 run edgedrive_perception camera_node --ros-args
+      -p engine_path:=/workspace/weights/${ENGINE:-yolo26n_det_int8_raw.engine}
+      -p score_threshold:=${THRESH:-0.3}
+      -p publish_viz:=false
+      -p publish_bev:=false
+      --remap /camera/image_raw:=/nuscenes/camera/image_raw
+
   # ── Camera node + BEV ─────────────────────────────────────────────────────
   camera-node-bev:
     <<: *base
@@ -96,7 +113,7 @@ services:
   bag-replay:
     <<: *base
     command: >
-      ros2 bag play bags/${BAG:-nuscenes.db3}
+      ros2 bag play /workspace/bags/${BAG:-nuscenes_scene0}
       --topics /nuscenes/camera/image_raw /nuscenes/lidar/pointcloud
       --loop
 

@@ -30,7 +30,8 @@ ros2_ws/
         ├── launch/
         │   └── camera.launch.py     ← configurable launch file
         └── config/
-            └── camera_node.yaml     ← default parameters
+            ├── camera_node.yaml     ← default parameters
+            └── edgedrive.rviz       ← RViz2 auto-config (MarkerArray + Image pre-loaded)
 ```
 
 ---
@@ -114,12 +115,11 @@ xhost +local:docker
 ```
 
 Starts TF publisher + bag replay + camera_node + RViz2 in one container.
-
-In RViz2:
+RViz2 config auto-loads from `config/edgedrive.rviz`:
 ```
-Fixed Frame : base_link
-Add → By topic → /detections/camera_markers → MarkerArray
-Add → By topic → /camera/annotated          → Image
+Fixed Frame : base_link             ← pre-configured
+MarkerArray : /detections/camera_markers ← pre-loaded
+Image       : /camera/annotated          ← pre-loaded
 ```
 
 ### Run — live USB camera
@@ -132,15 +132,23 @@ docker compose -f docker/docker-compose.ros2.yml run --rm camera-node
 ### Run — nuScenes bag replay
 
 ```bash
-# Generate bag first (one time)
+# Generate one scene
 python3 scripts/nuscenes_to_ros2bag.py \
     --dataroot /data/sets/nuscenes \
-    --output bags/nuscenes_scene0 \
-    --scene-idx 0
+    --output bags/nuscenes_scene0 --scene-idx 0
 
-# Run full pipeline
+# Generate all 10 scenes
+python3 scripts/nuscenes_to_ros2bag.py \
+    --dataroot /data/sets/nuscenes \
+    --output bags/nuscenes_all --all-scenes
+
+# Run headless pipeline
 sudo jetson_clocks
 ./scripts/run_ros2_bag_demo.sh
+
+# Run specific scene or all scenes
+BAG=nuscenes_scene3 ./scripts/run_ros2_bag_demo.sh
+BAG=nuscenes_all    ./scripts/run_ros2_bag_demo.sh
 ```
 
 ### Run — with launch file

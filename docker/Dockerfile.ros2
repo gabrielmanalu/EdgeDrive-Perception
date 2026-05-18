@@ -93,16 +93,27 @@ RUN echo "source /opt/ros/humble/setup.bash" >> /root/.bashrc
 # ROS2 ament_cmake expects /usr/bin/python3
 RUN ln -sf /usr/bin/python3 /usr/local/bin/python3 || true
 
-# Build the edgedrive_perception ROS2 package
+# ── Copy package manifests first (cache-friendly layer order) ─────────────────
+# Docker caches layers until files change. By copying package.xml and
+# CMakeLists.txt before source files, dependency resolution is cached
+# as long as manifests don't change — only source changes trigger recompile.
+COPY ros2_ws/src/edgedrive_perception/package.xml \
+     ros2_ws/src/edgedrive_perception/package.xml
+COPY ros2_ws/src/edgedrive_perception/CMakeLists.txt \
+     ros2_ws/src/edgedrive_perception/CMakeLists.txt
+
+# ── Copy source files (triggers recompile only when source changes) ───────────
 COPY ros2_ws/ ros2_ws/
 COPY deployment/src/ deployment/src/
 COPY deployment/include/ deployment/include/
 COPY deployment/CMakeLists.txt deployment/CMakeLists.txt
 
+# Build — ~25s on cache hit (only relinking), ~50s on source change
 RUN bash -c "source /opt/ros/humble/setup.bash && \
              cd ros2_ws && \
              colcon build --packages-select edgedrive_perception \
-             --cmake-args -DCMAKE_BUILD_TYPE=Release"
+             --cmake-args -DCMAKE_BUILD_TYPE=Release \
+             --event-handlers console_cohesion+"
 
 # Source workspace on every bash session
 RUN echo "source /workspace/ros2_ws/install/setup.bash" >> /root/.bashrc

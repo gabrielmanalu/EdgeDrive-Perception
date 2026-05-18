@@ -88,6 +88,7 @@ docker run --rm --runtime nvidia \
     -v /tmp/.X11-unix:/tmp/.X11-unix \
     -v "$REPO_ROOT/weights":/workspace/weights:ro \
     -v "$REPO_ROOT/bags":/workspace/bags:ro \
+    -v "$REPO_ROOT/ros2_ws/src":/workspace/ros2_ws/src:ro \
     edgedrive-ros2:latest \
     bash -c "
         source /opt/ros/humble/setup.bash
@@ -116,14 +117,7 @@ docker run --rm --runtime nvidia \
         CAM_PID=\$!
 
         echo 'Opening RViz2...'
-        echo ''
-        echo 'In RViz2:'
-        echo '  1. Fixed Frame is already set to base_link'
-        echo '  2. Add → By topic → /detections/camera_markers → MarkerArray'
-        echo '  3. Add → By topic → /camera/annotated → Image'
-        echo ''
-        sleep 2
-        rviz2
+        rviz2 -d /workspace/ros2_ws/src/edgedrive_perception/config/edgedrive.rviz
 
         # Cleanup on RViz2 exit
         kill \$CAM_PID \$BAG_PID \$TF_PID 2>/dev/null || true

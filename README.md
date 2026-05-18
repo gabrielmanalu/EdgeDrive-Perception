@@ -79,6 +79,7 @@ Isolated video (no VNC)  : +2.9W  → 10.2W total
 
 > Full ROS2 pipeline with 3D visualization. Colored cylinders represent
 > camera detections projected to ground plane. Labels show class + distance.
+> RViz2 config auto-loads — no manual setup needed.
 
 ![RViz2 MarkerArray BEV](demo/screenshots/ros2/rviz2_camera_markers.gif)
 

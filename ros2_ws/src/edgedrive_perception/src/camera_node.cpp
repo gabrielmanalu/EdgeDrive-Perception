@@ -10,8 +10,12 @@
 
 #include <vision_msgs/msg/detection2_d.hpp>
 #include <vision_msgs/msg/object_hypothesis_with_pose.hpp>
+#include <visualization_msgs/msg/marker.hpp>
 #include <cv_bridge/cv_bridge.h>
 #include <chrono>
+#include <cmath>
+#include <iomanip>
+#include <sstream>
 
 namespace edgedrive {
 
@@ -26,13 +30,19 @@ CameraNode::CameraNode(const rclcpp::NodeOptions& options)
     score_threshold_  = declare_parameter("score_threshold", 0.3f);
     publish_viz_      = declare_parameter("publish_viz", true);
     publish_bev_      = declare_parameter("publish_bev", false);
+    publish_markers_  = declare_parameter("publish_markers", true);
     camera_height_    = declare_parameter("camera_height", 1.2f);
+    fx_               = declare_parameter("camera_fx", 640.0f);
+    fy_               = declare_parameter("camera_fy", 640.0f);
+    cx_               = declare_parameter("camera_cx", 0.0f);  // 0 = auto
+    cy_               = declare_parameter("camera_cy", 0.0f);  // 0 = auto
 
     RCLCPP_INFO(get_logger(), "EdgeDrive CameraNode starting...");
     RCLCPP_INFO(get_logger(), "  Engine    : %s", engine_path_.c_str());
     RCLCPP_INFO(get_logger(), "  Threshold : %.2f", score_threshold_);
-    RCLCPP_INFO(get_logger(), "  Publish viz: %s", publish_viz_ ? "yes" : "no");
-    RCLCPP_INFO(get_logger(), "  Publish BEV: %s", publish_bev_ ? "yes" : "no");
+    RCLCPP_INFO(get_logger(), "  Publish viz    : %s", publish_viz_ ? "yes" : "no");
+    RCLCPP_INFO(get_logger(), "  Publish BEV    : %s", publish_bev_ ? "yes" : "no");
+    RCLCPP_INFO(get_logger(), "  Publish markers: %s", publish_markers_ ? "yes" : "no");
 
     // ── Initialize inference modules ──────────────────────────────────────────
     try {
@@ -60,6 +70,10 @@ CameraNode::CameraNode(const rclcpp::NodeOptions& options)
     if (publish_bev_)
         bev_pub_ = create_publisher<sensor_msgs::msg::Image>(
             "/camera/bev", 10);
+
+    if (publish_markers_)
+        marker_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>(
+            "/detections/camera_markers", 10);
 
     // ── Subscriber ────────────────────────────────────────────────────────────
     // Explicit RELIABLE QoS — publisher must match
@@ -132,7 +146,9 @@ void CameraNode::imageCallback(
         bev_pub_->publish(*bev_msg);
     }
 
-    // ── Log stats every 30 frames ─────────────────────────────────────────────
+    // ── Publish markers ───────────────────────────────────────────────────────
+    if (publish_markers_ && marker_pub_)
+        publishMarkers(dets, msg->header, frame.cols, frame.rows);
     frame_count_++;
     if (frame_count_ % 30 == 0) {
         RCLCPP_INFO(get_logger(),
@@ -173,6 +189,121 @@ vision_msgs::msg::Detection2DArray CameraNode::toRosMsg(
     }
 
     return msg;
+}
+
+} // namespace edgedrive
+
+// ── publishMarkers ────────────────────────────────────────────────────────────
+
+namespace edgedrive {
+
+void CameraNode::publishMarkers(
+    const std::vector<Detection>& dets,
+    const std_msgs::msg::Header& header,
+    int img_w, int img_h)
+{
+    // Auto-compute principal point if not set
+    float cx = (cx_ > 0) ? cx_ : img_w * 0.5f;
+    float cy = (cy_ > 0) ? cy_ : img_h * 0.5f;
+
+    visualization_msgs::msg::MarkerArray marker_array;
+
+    // Delete all previous markers first (clean slate each frame)
+    visualization_msgs::msg::Marker delete_marker;
+    delete_marker.header = header;
+    delete_marker.action = visualization_msgs::msg::Marker::DELETEALL;
+    marker_array.markers.push_back(delete_marker);
+
+    // Class colors (BGR → RGB for RViz2)
+    // Matches YOLO26Decoder::CLASS_COLORS
+    static const std::vector<std::array<float,3>> CLASS_COLORS_RGB = {
+        {1.0f, 1.0f, 0.0f},   // car          yellow
+        {1.0f, 0.0f, 0.0f},   // pedestrian   red
+        {0.0f, 1.0f, 0.0f},   // bicycle      green
+        {0.0f, 1.0f, 0.0f},   // motorcycle   green
+        {0.0f, 1.0f, 1.0f},   // bus          cyan
+        {1.0f, 0.5f, 0.0f},   // truck        orange
+        {1.0f, 1.0f, 1.0f},   // traffic_cone white
+        {1.0f, 0.0f, 1.0f},   // barrier      magenta
+    };
+
+    int id = 0;
+    for (const auto& det : dets) {
+        // Bottom-center of bounding box = ground contact point
+        float u = (det.x1 + det.x2) * 0.5f;
+        float v =  det.y2;
+
+        float dv = v - cy;
+        if (dv <= 1.0f) continue;  // above horizon
+
+        // Ground plane projection
+        float Z = camera_height_ * fy_ / dv;   // forward (meters)
+        float X = (u - cx) * Z / fx_;           // lateral (meters)
+
+        if (Z < 0.5f || Z > 30.0f) continue;
+
+        // ── Cylinder marker (detection footprint) ────────────────────────────
+        visualization_msgs::msg::Marker cyl;
+        cyl.header    = header;
+        cyl.header.frame_id = "cam_front";
+        cyl.ns        = "camera_detections";
+        cyl.id        = id++;
+        cyl.type      = visualization_msgs::msg::Marker::CYLINDER;
+        cyl.action    = visualization_msgs::msg::Marker::ADD;
+
+        // Position in camera frame: X=lateral, Y=up(unused), Z=forward
+        cyl.pose.position.x  = Z;   // forward = x in RViz2 (ego forward)
+        cyl.pose.position.y  = -X;  // lateral (right = negative in cam frame)
+        cyl.pose.position.z  = 0.0; // ground plane
+
+        cyl.pose.orientation.w = 1.0;
+
+        // Size: width estimated from box pixel width
+        float box_w_px = det.x2 - det.x1;
+        float est_w_m  = std::max(0.5f, std::min(3.5f,
+                            box_w_px * Z / fx_));
+        cyl.scale.x = est_w_m;
+        cyl.scale.y = est_w_m;
+        cyl.scale.z = det.score * 2.0f;  // height = confidence (max 2m)
+
+        // Color by class
+        auto& col = CLASS_COLORS_RGB[
+            std::min((int)det.class_id, (int)CLASS_COLORS_RGB.size()-1)];
+        cyl.color.r = col[0];
+        cyl.color.g = col[1];
+        cyl.color.b = col[2];
+        cyl.color.a = 0.7f;
+
+        cyl.lifetime = rclcpp::Duration::from_seconds(1.0);
+        marker_array.markers.push_back(cyl);
+
+        // ── Text label ───────────────────────────────────────────────────────
+        visualization_msgs::msg::Marker txt;
+        txt.header    = header;
+        txt.header.frame_id = "cam_front";
+        txt.ns        = "camera_labels";
+        txt.id        = id++;
+        txt.type      = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
+        txt.action    = visualization_msgs::msg::Marker::ADD;
+
+        txt.pose.position.x = Z;
+        txt.pose.position.y = -X;
+        txt.pose.position.z = cyl.scale.z + 0.3f;
+        txt.pose.orientation.w = 1.0;
+
+        txt.scale.z = 0.4f;  // text height in meters
+        txt.color.r = txt.color.g = txt.color.b = 1.0f;
+        txt.color.a = 1.0f;
+
+        std::ostringstream ss;
+        ss << det.class_name << "\n"
+           << std::fixed << std::setprecision(1) << Z << "m";
+        txt.text = ss.str();
+        txt.lifetime = rclcpp::Duration::from_seconds(1.0);
+        marker_array.markers.push_back(txt);
+    }
+
+    marker_pub_->publish(marker_array);
 }
 
 } // namespace edgedrive

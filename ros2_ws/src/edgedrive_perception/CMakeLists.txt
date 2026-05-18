@@ -80,6 +80,7 @@ ament_target_dependencies(camera_node
     sensor_msgs
     std_msgs
     vision_msgs
+    visualization_msgs
     image_transport
     cv_bridge
     tf2_ros

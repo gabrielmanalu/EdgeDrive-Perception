@@ -53,6 +53,7 @@ runs TensorRT inference, publishes detection results.
 | `/detections/camera` | `vision_msgs/Detection2DArray` | 2D bounding boxes + class + score |
 | `/camera/annotated` | `sensor_msgs/Image` | Annotated frame with boxes + FPS HUD |
 | `/camera/bev` | `sensor_msgs/Image` | Bird's Eye View projection (if enabled) |
+| `/detections/camera_markers` | `visualization_msgs/MarkerArray` | 3D cylinders in BEV for RViz2 |
 
 **Parameters:**
 | Parameter | Default | Description |
@@ -61,6 +62,7 @@ runs TensorRT inference, publishes detection results.
 | `score_threshold` | `0.3` | Detection confidence threshold |
 | `publish_viz` | `true` | Publish annotated image |
 | `publish_bev` | `false` | Publish BEV projection |
+| `publish_markers` | `true` | Publish RViz2 MarkerArray (3D BEV cylinders) |
 | `camera_height` | `1.2` | Camera height above ground (m) for BEV |
 
 **QoS:** RELIABLE, VOLATILE, depth=10
@@ -101,6 +103,23 @@ docker compose -f docker/docker-compose.ros2.yml run --rm dev \
 Or rebuild the full image:
 ```bash
 docker build -t edgedrive-ros2:latest -f docker/Dockerfile.ros2 .
+```
+
+### Run — RViz2 visualization (full demo)
+
+```bash
+sudo jetson_clocks
+xhost +local:docker
+./scripts/run_ros2_rviz_demo.sh
+```
+
+Starts TF publisher + bag replay + camera_node + RViz2 in one container.
+
+In RViz2:
+```
+Fixed Frame : base_link
+Add → By topic → /detections/camera_markers → MarkerArray
+Add → By topic → /camera/annotated          → Image
 ```
 
 ### Run — live USB camera

@@ -75,7 +75,31 @@ Isolated video (no VNC)  : +2.9W  → 10.2W total
 
 ---
 
-### ROS2 Pipeline — nuScenes Bag Replay (180 FPS)
+### ROS2 RViz2 — Camera Detections in 3D BEV (MarkerArray)
+
+> Full ROS2 pipeline with 3D visualization. Colored cylinders represent
+> camera detections projected to ground plane. Labels show class + distance.
+
+![RViz2 MarkerArray BEV](demo/screenshots/ros2/rviz2_camera_markers.gif)
+
+```
+Left  : /camera/annotated — detection boxes + FPS HUD
+Right : /detections/camera_markers — 3D cylinders in BEV
+        car (yellow) · pedestrian (red) · bus (cyan) · barrier (magenta)
+        Cylinder height = confidence score
+        Label = class + estimated distance
+```
+
+```bash
+# One-command demo (bag + camera_node + TF + RViz2 in single container)
+sudo jetson_clocks
+xhost +local:docker
+./scripts/run_ros2_rviz_demo.sh
+```
+
+---
+
+### ROS2 Pipeline — nuScenes Bag Replay (~180 FPS)
 
 > Full ROS2 pipeline: nuScenes bag → camera_node → /detections/camera
 > TRT INT8 inference via ROS2 topics on 1600×900 nuScenes front camera images.
@@ -95,6 +119,7 @@ python3 scripts/nuscenes_to_ros2bag.py \
 # Run full pipeline
 sudo jetson_clocks
 ./scripts/run_ros2_bag_demo.sh
+│   ├── run_ros2_rviz_demo.sh     ← ROS2 bag + camera_node + RViz2 (single container)
 ```
 
 ---
@@ -409,7 +434,8 @@ EdgeDrive-Perception/
 │   ├── run_benchmark.sh          ← full benchmark suite
 │   ├── test_camera.sh            ← all camera/video/BEV test modes
 │   ├── test_ros2_camera.sh       ← test ROS2 camera_node with synthetic image
-│   ├── run_ros2_bag_demo.sh      ← full ROS2 bag → TRT → detections demo
+│   ├── run_ros2_bag_demo.sh      ← headless ROS2 bag → TRT → detections
+│   ├── run_ros2_rviz_demo.sh     ← ROS2 bag + camera_node + RViz2 (single container)
 │   ├── nuscenes_to_ros2bag.py    ← convert nuScenes → ROS2 .db3 bag
 │   ├── make_test_video.py        ← stitch nuScenes images → .mp4
 │   ├── hardware_monitor.py       ← real-time Jetson hardware monitor
@@ -520,7 +546,7 @@ See [`deployment/README.md`](deployment/README.md) and [`docker/README.md`](dock
 ### 7. ROS2 Pipeline Demo
 
 ```bash
-# Generate nuScenes bag
+# Generate nuScenes bag (one time)
 python3 scripts/nuscenes_to_ros2bag.py \
     --dataroot /data/sets/nuscenes \
     --version v1.0-mini \
@@ -530,9 +556,14 @@ python3 scripts/nuscenes_to_ros2bag.py \
 # Build ROS2 container
 docker build -t edgedrive-ros2:latest -f docker/Dockerfile.ros2 .
 
-# Run full pipeline (bag → TRT → detections)
+# Run headless pipeline (bag → TRT → detections)
 sudo jetson_clocks
 ./scripts/run_ros2_bag_demo.sh
+│   ├── run_ros2_rviz_demo.sh     ← ROS2 bag + camera_node + RViz2 (single container)
+
+# Run with RViz2 visualization (bag + camera_node + MarkerArray + RViz2)
+xhost +local:docker
+./scripts/run_ros2_rviz_demo.sh
 ```
 
 ---

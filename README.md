@@ -124,28 +124,13 @@ sudo jetson_clocks
 
 ---
 
-### Camera-LiDAR Late Fusion — Bird's Eye View
-
-PointPillars 3D detections fused with YOLO26n 2D detections on
-nuScenes Mini. Blue = LiDAR only | Green = Camera only | Red = Fused.
-
-![Fusion BEV](demo/screenshots/fusion/fusion_bev_final.png)
-
-### YOLO26n Object Detection — nuScenes Front Camera + Bird's Eye View
-
-![Detection](demo/screenshots/training/yolo26n_detection.png)
-
-### PointPillars BEV — Point Cloud + 3D Boxes
-
-![PointPillars BEV](demo/screenshots/fusion/bev_with_pointcloud.png)
-
----
-
 ### CUDA-PointPillars on Jetson — LiDAR 3D Detection (~37-45 FPS)
 
 > NVIDIA CUDA-PointPillars patched for SM87 + TRT 10.3.0 running our
 > nuScenes-trained model. Full pipeline: voxelization → CHW scatter →
 > TRT backbone → NMS → detections.
+
+![CUDA-PointPillars BEV](demo/screenshots/ros2/pointpillars_bev.png)
 
 ```
 Voxelization   :  0.2ms
@@ -164,6 +149,19 @@ export CUDASM=87
 ./pointpillar ../data/ ../data/ --timer
 ```
 See [`cuda-pointpillars-patches/README.md`](cuda-pointpillars-patches/README.md) for full instructions.
+
+---
+
+### Camera-LiDAR Late Fusion — Bird's Eye View (Colab)
+
+PointPillars 3D detections fused with YOLO26n 2D detections on
+nuScenes Mini. Blue = LiDAR only | Green = Camera only | Red = Fused.
+
+![Fusion BEV](demo/screenshots/fusion/fusion_bev_final.png)
+
+See [`fusion/README.md`](fusion/README.md) for details.
+
+---
 
 ## Architecture
 
@@ -444,7 +442,7 @@ EdgeDrive-Perception/
 │       ├── speed_estimator.cpp      ← displacement → km/h (ref)
 │       ├── segmentation_decoder.cpp ← mask coefficients × protos (ref)
 │       ├── preprocessor.cu          ← CUDA letterbox kernel (ref)
-│       └──  late_fusion.cpp          ← camera-LiDAR fusion (⬜ WIP)
+│       └── late_fusion.cpp          ← camera-LiDAR fusion (⬜ WIP)
 ├── docker/                ← Container deployment
 │   ├── Dockerfile         ← multi-stage build (builder + runtime)
 │   ├── docker-compose.yml ← all run modes (camera/video/benchmark)

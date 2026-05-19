@@ -18,14 +18,26 @@ nuScenes bag / USB camera / CSI camera
     │  yolo26_decoder   │    (1600×900 nuScenes input)
     │  bev_visualizer   │
     └───────────────────┘
-            │                         │                    │
-            │ Detection2DArray        │ Image (annotated)  │ Image (BEV)
-            ▼                         ▼                    ▼
-    /detections/camera        /camera/annotated       /camera/bev
+            │                    │                    │                    │
+            │ Detection2DArray   │ Image (annotated)  │ Image (BEV)        │ MarkerArray
+            ▼                    ▼                    ▼                    ▼
+    /detections/camera   /camera/annotated       /camera/bev    /detections/camera_markers
+                                                                      (RViz2 BEV cylinders)
 
+nuScenes LiDAR bag
             │
-            │
+            │ sensor_msgs/PointCloud2
             ▼
+    ┌─────────────────────────┐
+    │  CUDA-PointPillars      │  ← standalone C++
+    │                         │    ~25-30ms, ~37-45 FPS
+    │  lidar-voxelization.cu  │    43,440 pts/frame
+    │  pillarScatterCHW kernel│    140-191 detections/frame
+    │  TRT backbone FP16      │
+    │  lidar-postprocess.cu   │
+    └─────────────────────────┘
+            │
+            ▼ (Phase 4 — lidar_detection_node)
     ┌───────────────────┐
     │   fusion_node     │  ← Hungarian matching
     │                   │    ApproximateTime sync
@@ -61,24 +73,30 @@ edgedrive container (production):
 
 ## Topic Graph
 
-### Phase 1+2 (current)
+### Current
 
 ```
 [rosbag2 player]──/nuscenes/camera/image_raw──►[camera_node]
                                                      │
-                                    ┌────────────────┤
-                                    │                │
-                          /detections/camera  /camera/annotated
-                                    │
-                              (Detection2DArray)
-                              header, detections[]:
-                                bbox.center.x/y
+                                    ┌────────────────┤────────────────────┐
+                                    │                │                    │
+                          /detections/camera  /camera/annotated  /detections/camera_markers
+                                    │                                     │
+                              (Detection2DArray)                    (MarkerArray)
+                              header, detections[]:               green cylinders
+                                bbox.center.x/y                   in RViz2 BEV
                                 bbox.size_x/y
                                 results[0].class_id
                                 results[0].score
+
+[rosbag2 player]──/nuscenes/lidar/pointcloud──►[CUDA-PointPillars C++]
+                                                     │
+                                               ../data/*.txt
+                                               (x y z w l h rt class score)
+                                               140-191 detections/frame
 ```
 
-### Phase 3+4 (planned)
+### Planned — lidar_detection_node + fusion_node
 
 ```
 [rosbag2 player]──/nuscenes/camera/image_raw──►[camera_node]──/detections/camera───►┐
@@ -151,6 +169,7 @@ ros2 bag play bags/nuscenes_scene0
 | Standalone C++ (720p) | 203 | 1.1ms | 3.7ms | No ROS2 overhead |
 | ROS2 camera_node (720p) | ~195 | 1.1ms | 3.7ms | topic serialize overhead |
 | ROS2 camera_node (1600×900) | ~180 | 1.8ms | 4.0ms | nuScenes resolution |
+| CUDA-PointPillars (43K pts) | ~37-45 | 0.2ms vox | 13-17ms bb |  |
 
 ROS2 overhead is ~5 FPS due to:
 - `sensor_msgs/Image` serialization/deserialization per frame
@@ -176,3 +195,8 @@ Use compose services which mount only `weights/` and `bags/`.
 Even with `--network host`, DDS multicast discovery sometimes fails
 between two separate containers. Solution: run bag replay and camera_node
 in the same container (as in `run_ros2_bag_demo.sh`).
+
+**CUDA-PointPillars class labels may be inaccurate**
+Our simplified 4-size anchor set doesn't fully match all nuScenes 10-class
+anchors. Detection geometry and count are correct — class assignment will
+be refined when fusion_node is wired up. See `cuda-pointpillars-patches/`.

@@ -59,8 +59,21 @@ Detections        : 6-58 per frame           140-191 per frame
 
 ## Setup
 
-### 1. Prerequisites
+### One-command setup (recommended)
 
+```bash
+# Export ONNX from mmdetection3d first (see fusion/train_pointpillars.py)
+# Then copy to weights/:
+cp pointpillars_nuscenes_backbone.onnx ~/EdgeDrive-Perception/weights/
+
+# Run setup script — clones, patches, builds, generates engine, tests
+cd ~/EdgeDrive-Perception
+./scripts/setup_cuda_pointpillars.sh
+```
+---
+
+### Manual setup
+### 1. Prerequisites
 ```bash
 # Jetson Orin Nano Super with JetPack R36.4.7
 # CUDA 12.6, TRT 10.3.0, SM87

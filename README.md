@@ -173,21 +173,28 @@ See [`fusion/README.md`](fusion/README.md) for details.
 │                            │                                     │
 │  nuScenes CAM_FRONT        │  nuScenes LIDAR_TOP                 │
 │       ↓                    │       ↓                             │
-│  YOLO26n (fine-tuned)      │  PointPillars (pre-trained)         │
+│  YOLO26n (fine-tuned)      │  PointPillars (mmdetection3d)       │
 │  2D detection + segmask    │  3D detection in BEV                │
 │       ↓                    │       ↓                             │
-│  Ground plane → BEV (x,y)  │  LiDAR→Ego transform                │
+│  Ground plane → BEV (x,y)  │  LiDAR→Ego  transform               │
 │                            │                                     │
 ├────────────────────────────┴─────────────────────────────────────┤
-│                    Late Fusion in BEV                            │
+│                    Late Fusion in BEV  (Colab)                   │
 │         Class-aware distance matching (12m threshold)            │
 │         Fused score: 0.6 × LiDAR + 0.4 × Camera                  │
 ├──────────────────────────────────────────────────────────────────┤
-│                 Quantization & Export                            │
-│   PTQ FP32→FP16→INT8  |  QAT  |  ONNX  |  TFLite  |  TensorRT    │
+│                   Quantization & Export                          │
+│    PTQ FP32→FP16→INT8  |  QAT  |  ONNX  |  TFLite  |  TensorRT   │
 ├──────────────────────────────────────────────────────────────────┤
-│         Dockerized Jetson Orin Nano Super Deployment             │
-│     C++ TensorRT  |  202 FPS INT8  |  ~8.03W  |  Live Camera     │
+│          Dockerized Jetson Orin Nano Super Deployment            │
+├────────────────────────────┬─────────────────────────────────────┤
+│  C++ TRT (edgedrive)       │  CUDA-PointPillars                  │
+│  202 FPS INT8 | ~8.03W     │  ~37-45 FPS | 25-30ms               │
+│  Live USB camera           │  43K pts nuScenes LiDAR             │
+├────────────────────────────┴─────────────────────────────────────┤
+│               ROS2 Humble Pipeline (edgedrive-ros2)              │
+│  camera_node ~180 FPS  |  nuScenes bag replay  |  RViz2 BEV      │
+│  MarkerArray 3D cylinders  |  CUDA-PP detections  (fusion TBD)   │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -457,6 +464,7 @@ EdgeDrive-Perception/
 │   ├── test_ros2_camera.sh       ← test ROS2 camera_node with synthetic image
 │   ├── run_ros2_bag_demo.sh      ← headless ROS2 bag → TRT → detections
 │   ├── run_ros2_rviz_demo.sh     ← ROS2 bag + camera_node + RViz2 (single container)
+│   ├── setup_cuda_pointpillars.sh ← clone, patch, build, engine in one command
 │   ├── nuscenes_to_ros2bag.py    ← convert nuScenes → ROS2 .db3 bag
 │   ├── make_test_video.py        ← stitch nuScenes images → .mp4
 │   ├── hardware_monitor.py       ← real-time Jetson hardware monitor
@@ -596,29 +604,18 @@ xhost +local:docker
 ### 8. CUDA-PointPillars LiDAR Demo
 
 ```bash
-# Clone and apply patches
-git clone https://github.com/NVIDIA-AI-IOT/CUDA-PointPillars.git cuda-pointpillars
-cd cuda-pointpillars
-sed -i 's/-std=c++14/-std=c++17/g' CMakeLists.txt
-cp ../cuda-pointpillars-patches/tensorrt.cpp        src/common/tensorrt.cpp
-cp ../cuda-pointpillars-patches/lidar-backbone.cu   src/pointpillar/lidar-backbone.cu
-cp ../cuda-pointpillars-patches/main.cpp            src/main.cpp
-cp ../cuda-pointpillars-patches/lidar-postprocess.hpp src/pointpillar/lidar-postprocess.hpp
+# Export ONNX from mmdetection3d (see fusion/train_pointpillars.py)
+# Copy to weights/ then run one-command setup:
+./scripts/setup_cuda_pointpillars.sh
 
-# Build TRT engine from nuScenes ONNX
-export TensorRT_Bin=/usr/src/tensorrt/bin/
-$TensorRT_Bin/trtexec \
-    --onnx=model/pointpillars_nuscenes_backbone.onnx \
-    --fp16 --plugins=build/libpointpillar_core.so \
-    --saveEngine=model/pointpillar.plan
-
-# Compile and run
-mkdir build && cd build
-export CUDASM=87
-cmake .. && make -j4
+# Run on nuScenes LiDAR data
+cp /data/sets/nuscenes/samples/LIDAR_TOP/<frame>.pcd.bin \
+   cuda-pointpillars/data/
+cd cuda-pointpillars/build
 ./pointpillar ../data/ ../data/ --timer
-# Expected: ~20ms total, detections saved to ../data/*.txt
+# Expected: ~25-30ms total, detections saved to ../data/*.txt
 ```
+See [`cuda-pointpillars-patches/README.md`](cuda-pointpillars-patches/README.md) for full instructions.
 
 ---
 

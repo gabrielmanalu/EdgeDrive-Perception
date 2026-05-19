@@ -84,8 +84,8 @@ Isolated video (no VNC)  : +2.9W  → 10.2W total
 ![RViz2 MarkerArray BEV](demo/screenshots/ros2/rviz2_camera_markers.gif)
 
 ```
-Left  : /camera/annotated — detection boxes + FPS HUD
-Right : /detections/camera_markers — 3D cylinders in BEV
+Right  : /camera/annotated — detection boxes + FPS HUD
+Left   : /detections/camera_markers — 3D cylinders in BEV
         car (yellow) · pedestrian (red) · bus (cyan) · barrier (magenta)
         Cylinder height = confidence score
         Label = class + estimated distance

@@ -82,6 +82,7 @@ cp "$PATCHES_DIR/tensorrt.cpp"         "$CUDA_PP_DIR/src/common/tensorrt.cpp"
 cp "$PATCHES_DIR/lidar-backbone.cu"    "$CUDA_PP_DIR/src/pointpillar/lidar-backbone.cu"
 cp "$PATCHES_DIR/main.cpp"             "$CUDA_PP_DIR/src/main.cpp"
 cp "$PATCHES_DIR/lidar-postprocess.hpp" "$CUDA_PP_DIR/src/pointpillar/lidar-postprocess.hpp"
+cp "$PATCHES_DIR/lidar-postprocess.cu"  "$CUDA_PP_DIR/src/pointpillar/lidar-postprocess.cu"
 
 echo "      ✅ patches applied"
 

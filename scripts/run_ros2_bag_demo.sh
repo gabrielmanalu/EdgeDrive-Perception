@@ -2,7 +2,7 @@
 # run_ros2_bag_demo.sh — Full ROS2 pipeline: nuScenes bag → TRT inference
 #
 # Runs bag replay + camera_node in a single container.
-# Equivalent of the full Phase 2 ROS2 demo.
+# Equivalent of the full ROS2 demo.
 #
 # Usage:
 #   ./scripts/run_ros2_bag_demo.sh                    # default scene0

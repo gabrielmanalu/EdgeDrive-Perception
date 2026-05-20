@@ -10,4 +10,7 @@ if [ -f /workspace/ros2_ws/install/setup.bash ]; then
     source /workspace/ros2_ws/install/setup.bash
 fi
 
+# Add CUDA-PointPillars library to path for lidar_detection_node
+export LD_LIBRARY_PATH=/workspace/cuda-pointpillars/build:${LD_LIBRARY_PATH}
+
 exec "$@"

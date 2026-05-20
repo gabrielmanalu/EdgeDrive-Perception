@@ -86,12 +86,64 @@ ament_target_dependencies(camera_node
     tf2_ros
 )
 
-# ── fusion_node (placeholder — wired in June with PointPillars) ──────────────
+# ── fusion_node (placeholder) ──────────────
 # add_executable(fusion_node
 #     src/fusion_node.cpp
 #     ${SHARED_SOURCES}
 # )
 # ament_target_dependencies(fusion_node ...)
+
+# ── lidar_detection_node ──────────────────────────────────────────────────────
+# Links against CUDA-PointPillars shared library (libpointpillar_core.so)
+# Headers from cuda-pointpillars/src/
+
+if(EXISTS /workspace/cuda-pointpillars/src)
+    set(CUDA_PP_SRC /workspace/cuda-pointpillars/src)
+    set(CUDA_PP_LIB /workspace/cuda-pointpillars/build/libpointpillar_core.so)
+else()
+    set(CUDA_PP_SRC ${CMAKE_SOURCE_DIR}/../../../../cuda-pointpillars/src)
+    set(CUDA_PP_LIB ${CMAKE_SOURCE_DIR}/../../../../cuda-pointpillars/build/libpointpillar_core.so)
+endif()
+
+if(EXISTS ${CUDA_PP_LIB})
+    add_executable(lidar_detection_node
+        src/lidar_detection_node.cpp
+    )
+
+    target_include_directories(lidar_detection_node PRIVATE
+        include
+        ${CUDA_PP_SRC}
+        ${CUDA_PP_SRC}/common
+        ${TENSORRT_INCLUDE_DIR}
+        ${CUDA_INCLUDE_DIRS}
+    )
+
+    target_link_libraries(lidar_detection_node
+        ${CUDA_PP_LIB}
+        ${TENSORRT_LIBRARY}
+        ${TENSORRT_PLUGIN_LIB}
+        ${CUDA_LIBRARIES}
+        pthread
+        -Wl,--allow-shlib-undefined
+    )
+
+    ament_target_dependencies(lidar_detection_node
+        rclcpp
+        sensor_msgs
+        std_msgs
+        vision_msgs
+        visualization_msgs
+        tf2_ros
+    )
+
+    install(TARGETS lidar_detection_node
+        DESTINATION lib/${PROJECT_NAME}
+    )
+    message(STATUS "lidar_detection_node: enabled (libpointpillar_core found)")
+else()
+    message(WARNING "lidar_detection_node: DISABLED — libpointpillar_core.so not found at ${CUDA_PP_LIB}")
+    message(WARNING "  Run ./scripts/setup_cuda_pointpillars.sh first")
+endif()
 
 # ── Install ───────────────────────────────────────────────────────────────────
 install(TARGETS camera_node

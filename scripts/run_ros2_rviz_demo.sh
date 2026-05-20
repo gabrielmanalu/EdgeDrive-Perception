@@ -3,24 +3,19 @@
 #
 # Runs everything in one container:
 #   - Static TF publisher (base_link → cam_front)
-#   - nuScenes bag replay
-#   - camera_node (TRT inference + MarkerArray + annotated image)
-#   - RViz2
+#   - nuScenes bag replay (camera + LiDAR)
+#   - camera_node (TRT inference + green MarkerArray)
+#   - lidar_detection_node (CUDA-PointPillars + blue MarkerArray)
+#   - RViz2 (camera green + LiDAR blue cylinders side by side)
 #
 # Usage:
 #   ./scripts/run_ros2_rviz_demo.sh
 #   BAG=nuscenes_scene0 ./scripts/run_ros2_rviz_demo.sh
 #
-# In RViz2:
-#   Fixed Frame  : base_link (already set)
-#   Add → By topic → /detections/camera_markers → MarkerArray
-#   Add → By topic → /camera/annotated          → Image
-#
 # Prerequisites:
 #   sudo jetson_clocks
 #   xhost +local:docker
-#   Bag exists: bags/nuscenes_scene0/
-#   Image built: docker build -t edgedrive-ros2:latest -f docker/Dockerfile.ros2 .
+#   scripts/setup_cuda_pointpillars.sh must have been run first
 
 set -e
 
@@ -35,10 +30,7 @@ THRESH="${THRESH:-0.3}"
 
 if [ ! -d "bags/$BAG" ]; then
     echo "Error: bags/$BAG not found."
-    echo "Generate it first:"
-    echo "  python3 scripts/nuscenes_to_ros2bag.py \\"
-    echo "      --dataroot /data/sets/nuscenes \\"
-    echo "      --output bags/$BAG --scene-idx 0"
+    echo "  python3 scripts/nuscenes_to_ros2bag.py --output bags/$BAG --scene-idx 0"
     exit 1
 fi
 
@@ -53,10 +45,13 @@ if [ ! -f "weights/$ENGINE" ]; then
     exit 1
 fi
 
-# ── X11 display check ─────────────────────────────────────────────────────────
-if [ -z "$DISPLAY" ]; then
-    echo "Warning: DISPLAY not set. RViz2 requires X11."
-    echo "  Run: xhost +local:docker"
+PP_PLAN="cuda-pointpillars/model/pointpillar.plan"
+if [ ! -f "$PP_PLAN" ]; then
+    echo "Warning: $PP_PLAN not found — lidar_detection_node will not start."
+    echo "  Run: ./scripts/setup_cuda_pointpillars.sh"
+    LIDAR_ENABLED=false
+else
+    LIDAR_ENABLED=true
 fi
 
 echo ""
@@ -65,17 +60,17 @@ echo "EdgeDrive ROS2 RViz2 Demo"
 echo "================================================="
 echo "  Bag     : bags/$BAG"
 echo "  Engine  : weights/$ENGINE"
+echo "  LiDAR   : $LIDAR_ENABLED"
 echo ""
-echo "RViz2 setup:"
-echo "  Fixed Frame : base_link"
-echo "  Add → /detections/camera_markers → MarkerArray"
-echo "  Add → /camera/annotated          → Image"
+echo "RViz2:"
+echo "  Green cylinders = camera detections"
+echo "  Blue  cylinders = LiDAR detections"
 echo ""
 echo "Press Ctrl+C to stop."
 echo "================================================="
 echo ""
 
-# ── Single container: TF + bag + camera_node + rviz2 ─────────────────────────
+# ── Single container: TF + bag + camera_node + lidar_node + rviz2 ─────────────
 
 docker run --rm --runtime nvidia \
     --network host \
@@ -89,24 +84,25 @@ docker run --rm --runtime nvidia \
     -v "$REPO_ROOT/weights":/workspace/weights:ro \
     -v "$REPO_ROOT/bags":/workspace/bags:ro \
     -v "$REPO_ROOT/ros2_ws/src":/workspace/ros2_ws/src:ro \
+    -v "$REPO_ROOT/cuda-pointpillars/model":/workspace/cuda-pointpillars/model:ro \
     edgedrive-ros2:latest \
     bash -c "
         source /opt/ros/humble/setup.bash
         source /workspace/ros2_ws/install/setup.bash
 
-        echo '[1/4] Starting static TF publisher (base_link → cam_front)...'
+        echo '[1/5] Static TF: base_link → cam_front'
         ros2 run tf2_ros static_transform_publisher \
             0 0 1.2 0 0 0 base_link cam_front &
         TF_PID=\$!
 
-        echo '[2/4] Starting nuScenes bag replay...'
+        echo '[2/5] Starting bag replay...'
         ros2 bag play /workspace/bags/$BAG --loop &
         BAG_PID=\$!
 
-        echo '[3/4] Waiting for bag to start...'
+        echo '[3/5] Waiting for bag to start...'
         sleep 3
 
-        echo '[4/4] Starting camera_node (TRT inference + markers)...'
+        echo '[4/5] Starting camera_node + lidar_detection_node...'
         ros2 run edgedrive_perception camera_node --ros-args \
             -p engine_path:=/workspace/weights/$ENGINE \
             -p score_threshold:=$THRESH \
@@ -116,9 +112,20 @@ docker run --rm --runtime nvidia \
             -r /camera/image_raw:=/nuscenes/camera/image_raw &
         CAM_PID=\$!
 
-        echo 'Opening RViz2...'
+        if [ -f /workspace/cuda-pointpillars/model/pointpillar.plan ]; then
+            ros2 run edgedrive_perception lidar_detection_node --ros-args \
+                -p engine_path:=/workspace/cuda-pointpillars/model/pointpillar.plan \
+                -p score_threshold:=$THRESH \
+                -p publish_markers:=true &
+            LIDAR_PID=\$!
+        else
+            echo 'Warning: pointpillar.plan not found — skipping lidar_detection_node'
+            LIDAR_PID=''
+        fi
+
+        echo '[5/5] Opening RViz2...'
+        sleep 2
         rviz2 -d /workspace/ros2_ws/src/edgedrive_perception/config/edgedrive.rviz
 
-        # Cleanup on RViz2 exit
-        kill \$CAM_PID \$BAG_PID \$TF_PID 2>/dev/null || true
+        kill \$CAM_PID \$LIDAR_PID \$BAG_PID \$TF_PID 2>/dev/null || true
     "

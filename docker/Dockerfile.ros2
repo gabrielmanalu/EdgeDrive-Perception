@@ -108,6 +108,16 @@ COPY deployment/src/ deployment/src/
 COPY deployment/include/ deployment/include/
 COPY deployment/CMakeLists.txt deployment/CMakeLists.txt
 
+# ── Copy CUDA-PointPillars (headers + built .so for lidar_detection_node) ─────
+# The .so is pre-built on host via scripts/setup_cuda_pointpillars.sh
+COPY cuda-pointpillars/src/ cuda-pointpillars/src/
+COPY cuda-pointpillars/build/libpointpillar_core.so cuda-pointpillars/build/libpointpillar_core.so
+
+# Install .so to system lib path so ros2 run can find it
+RUN cp /workspace/cuda-pointpillars/build/libpointpillar_core.so \
+       /usr/lib/aarch64-linux-gnu/libpointpillar_core.so && \
+    ldconfig
+
 # Build — ~25s on cache hit (only relinking), ~50s on source change
 RUN bash -c "source /opt/ros/humble/setup.bash && \
              cd ros2_ws && \

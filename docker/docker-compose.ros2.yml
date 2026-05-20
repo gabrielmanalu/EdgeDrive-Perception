@@ -109,7 +109,27 @@ services:
       threshold:=${THRESH:-0.3}
       publish_bev:=true
 
-  # ── nuScenes bag replay (Phase 2) ──────────────────────────────────────────
+  # ── LiDAR detection node ──────────────────────────────────────────────────
+  lidar-node:
+    <<: *base
+    devices:
+      - /dev/nvmap:/dev/nvmap
+      - /dev/nvhost-ctrl-gpu:/dev/nvhost-ctrl-gpu
+      - /dev/nvhost-gpu:/dev/nvhost-gpu
+      - /dev/nvhost-as-gpu:/dev/nvhost-as-gpu
+      - /dev/nvhost-tsg-gpu:/dev/nvhost-tsg-gpu
+    volumes:
+      - ../weights:/workspace/weights:ro
+      - ../bags:/workspace/bags:ro
+      - ../cuda-pointpillars/model:/workspace/cuda-pointpillars/model:ro
+      - /tmp/.X11-unix:/tmp/.X11-unix
+    command: >
+      ros2 run edgedrive_perception lidar_detection_node --ros-args
+      -p engine_path:=/workspace/cuda-pointpillars/model/pointpillar.plan
+      -p score_threshold:=${THRESH:-0.15}
+      -p publish_markers:=true
+
+  # ── nuScenes bag replay ───────────────────────────────────────────────────
   bag-replay:
     <<: *base
     command: >

@@ -36,7 +36,7 @@ Visualization Manager:
 
     - Class: rviz_default_plugins/MarkerArray
       Enabled: true
-      Name: MarkerArray
+      Name: MarkerArray_Camera
       Namespaces:
         camera_detections: true
         camera_labels: true
@@ -47,6 +47,21 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /detections/camera_markers
+      Value: true
+
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: MarkerArray_LiDAR
+      Namespaces:
+        lidar_detections: true
+        lidar_labels: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /detections/lidar_markers
       Value: true
 
     - Class: rviz_default_plugins/Image

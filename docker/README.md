@@ -202,7 +202,14 @@ Displays    : MarkerArray (/detections/camera_markers)
 | `/detections/camera` | `vision_msgs/Detection2DArray` | 2D boxes + class + score |
 | `/camera/annotated` | `sensor_msgs/Image` | Annotated frame + FPS HUD |
 | `/camera/bev` | `sensor_msgs/Image` | BEV projection (if enabled) |
-| `/detections/camera_markers` | `visualization_msgs/MarkerArray` | 3D cylinders → RViz2 |
+| `/detections/camera_markers` | `visualization_msgs/MarkerArray` | Green 3D cylinders → RViz2 |
+
+### Topics published by lidar_detection_node
+
+| Topic | Type | Description |
+|---|---|---|
+| `/detections/lidar` | `vision_msgs/Detection3DArray` | 3D boxes + class + score |
+| `/detections/lidar_markers` | `visualization_msgs/MarkerArray` | Blue 3D cylinders → RViz2 |
 
 ### QoS — important
 
@@ -240,6 +247,7 @@ The compiled binary is baked into the image — no host build artifacts needed.
 | `camera-node-bev` | camera_node + BEV on USB camera |
 | `camera-node-bag` | camera_node remapped to nuScenes bag topics |
 | `camera-launch` | camera_node via launch file |
+| `lidar-node` | lidar_detection_node (CUDA-PointPillars, requires setup_cuda_pointpillars.sh) |
 | `bag-replay` | ros2 bag play (loop) |
 | `rviz` | RViz2 only |
 | `dev` | Interactive shell for development |

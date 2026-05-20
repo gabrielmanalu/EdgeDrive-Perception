@@ -9,7 +9,7 @@ Package  : edgedrive_perception
 ROS2     : Humble
 Container: edgedrive-ros2:latest (l4t-jetpack:r36.4.0 + ROS2 Humble)
 TRT      : 10.3.0 (matches host engines — no rebuild needed)
-Status   : camera_node ✅ | fusion_node ⬜
+Status   : camera_node ✅ | lidar_detection_node ✅ | fusion_node ⬜
 ```
 
 ---
@@ -24,14 +24,16 @@ ros2_ws/
         ├── CMakeLists.txt           ← build config, reuses deployment/ sources
         ├── include/edgedrive_perception/
         │   ├── camera_node.hpp      ← YOLO26n detection node
+        │   ├── lidar_detection_node.hpp ← CUDA-PointPillars ROS2 node
         │   └── fusion_node.hpp      ← camera-LiDAR fusion (⬜ planned)
         ├── src/
-        │   └── camera_node.cpp      ← full implementation
+        │   ├── camera_node.cpp      ← YOLO26n TRT inference
+        │   └── lidar_detection_node.cpp ← CUDA-PointPillars TRT inference
         ├── launch/
         │   └── camera.launch.py     ← configurable launch file
         └── config/
             ├── camera_node.yaml     ← default parameters
-            └── edgedrive.rviz       ← RViz2 auto-config (MarkerArray + Image pre-loaded)
+            └── edgedrive.rviz       ← RViz2 auto-config (camera + LiDAR MarkerArrays + Image)
 ```
 
 ---
@@ -70,7 +72,44 @@ runs TensorRT inference, publishes detection results.
 
 ---
 
-### fusion_node (planned — June 2026)
+
+### lidar_detection_node
+
+CUDA-PointPillars TRT FP16 detection node. Subscribes to a LiDAR
+PointCloud2 topic, runs voxelization → CHW scatter → TRT backbone → NMS,
+publishes Detection3DArray + MarkerArray (blue cylinders in RViz2).
+
+**Subscribes:**
+| Topic | Type | Description |
+|---|---|---|
+| `/nuscenes/lidar/pointcloud` | `sensor_msgs/PointCloud2` | Input LiDAR frames |
+
+**Publishes:**
+| Topic | Type | Description |
+|---|---|---|
+| `/detections/lidar` | `vision_msgs/Detection3DArray` | 3D bounding boxes + class + score |
+| `/detections/lidar_markers` | `visualization_msgs/MarkerArray` | Blue 3D cylinders → RViz2 BEV |
+
+**Parameters:**
+| Parameter | Default | Description |
+|---|---|---|
+| `engine_path` | `cuda-pointpillars/model/pointpillar.plan` | TRT plan file |
+| `score_threshold` | `0.15` | Detection confidence threshold |
+| `publish_markers` | `true` | Publish RViz2 MarkerArray |
+
+**Prerequisites:**
+```bash
+# Build CUDA-PointPillars and generate TRT engine first
+./scripts/setup_cuda_pointpillars.sh
+```
+
+**Performance:** ~25-30ms per frame (no jetson_clocks), 2Hz input from nuScenes bag.
+
+**QoS:** RELIABLE, VOLATILE, depth=10 (matches bag replay publisher)
+
+---
+
+### fusion_node (planned)
 
 Camera-LiDAR late fusion node using ApproximateTime synchronization.
 
@@ -105,6 +144,27 @@ Or rebuild the full image:
 ```bash
 docker build -t edgedrive-ros2:latest -f docker/Dockerfile.ros2 .
 ```
+
+### Run — RViz2 visualization (camera + LiDAR)
+
+```bash
+sudo jetson_clocks
+xhost +local:docker
+./scripts/run_ros2_rviz_demo.sh
+```
+
+Starts TF + bag + camera_node + lidar_detection_node + RViz2 in one container.
+RViz2 config auto-loads:
+```
+Fixed Frame : base_link
+Green cylinders : /detections/camera_markers  (camera BEV projection)
+Blue cylinders  : /detections/lidar_markers   (CUDA-PointPillars 3D)
+Image panel     : /camera/annotated           (annotated camera feed)
+```
+
+**Note:** Green and blue cylinders are in different coordinate frames
+(camera pinhole projection vs LiDAR 3D). Alignment requires extrinsic
+calibration — implemented in fusion_node.
 
 ### Run — RViz2 visualization (full demo)
 

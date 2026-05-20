@@ -29,7 +29,7 @@ nuScenes LiDAR bag
             │ sensor_msgs/PointCloud2
             ▼
     ┌─────────────────────────┐
-    │  CUDA-PointPillars      │  ← standalone C++
+    │  CUDA-PointPillars      │  ← standalone C++ 
     │                         │    ~25-30ms, ~37-45 FPS
     │  lidar-voxelization.cu  │    43,440 pts/frame
     │  pillarScatterCHW kernel│    140-191 detections/frame
@@ -37,7 +37,15 @@ nuScenes LiDAR bag
     │  lidar-postprocess.cu   │
     └─────────────────────────┘
             │
-            ▼ (Phase 4 — lidar_detection_node)
+            ▼ wrapped as ROS2 node 
+    ┌─────────────────────────┐
+    │  lidar_detection_node   │ 
+    │                         │  ← subscribes /nuscenes/lidar/pointcloud
+    │  links libpointpillar   │    publishes /detections/lidar_markers
+    │  _core.so               │    blue cylinders in RViz2
+    └─────────────────────────┘
+            │
+            ▼
     ┌───────────────────┐
     │   fusion_node     │  ← Hungarian matching
     │                   │    ApproximateTime sync
@@ -89,19 +97,25 @@ edgedrive container (production):
                                 results[0].class_id
                                 results[0].score
 
-[rosbag2 player]──/nuscenes/lidar/pointcloud──►[CUDA-PointPillars C++]
+[rosbag2 player]──/nuscenes/lidar/pointcloud ─►[CUDA-PointPillars C++ 
+                                                    ─► lidar_detection_node]
                                                      │
-                                               ../data/*.txt
-                                               (x y z w l h rt class score)
-                                               140-191 detections/frame
+                                                     │
+                        ┌────────────────────────────┤
+                        │                            │
+             /detections/lidar          /detections/lidar_markers
+             (Detection3DArray)          (blue cylinders → RViz2)
+             x,y,z,w,l,h,yaw,cls,score   25-30ms per frame
 ```
 
-### Planned — lidar_detection_node + fusion_node
+### Planned — fusion_node
 
 ```
 [rosbag2 player]──/nuscenes/camera/image_raw──►[camera_node]──/detections/camera───►┐
                 │                                                                   │
-                └──/nuscenes/lidar/pointcloud──►[lidar_node]──/detections/lidar────►┤
+                └──/nuscenes/lidar/pointcloud──►[lidar_detection_node]              │
+                                                           │                        │
+                                                           ──►  /detections/lidar──►┤             
                                                                                     │
                                                                                [fusion_node]
                                                                                     │
@@ -169,7 +183,8 @@ ros2 bag play bags/nuscenes_scene0
 | Standalone C++ (720p) | 203 | 1.1ms | 3.7ms | No ROS2 overhead |
 | ROS2 camera_node (720p) | ~195 | 1.1ms | 3.7ms | topic serialize overhead |
 | ROS2 camera_node (1600×900) | ~180 | 1.8ms | 4.0ms | nuScenes resolution |
-| CUDA-PointPillars (43K pts) | ~37-45 | 0.2ms vox | 13-17ms bb |  |
+| CUDA-PointPillars (43K pts) | ~37-45 | 0.2ms vox | 13-17ms bb | - |
+| lidar_detection_node (ROS2) | ~2 | — | ~25-30ms/frame | gated by bag 2Hz |
 
 ROS2 overhead is ~5 FPS due to:
 - `sensor_msgs/Image` serialization/deserialization per frame

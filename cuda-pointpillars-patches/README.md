@@ -17,6 +17,7 @@ These patches bring it to JetPack 6.x (TRT 10.3, CUDA 12.6, C++17).
 | `lidar-backbone.cu` | CHW scatter kernel + backbone-only engine (no PPScatterPlugin) |
 | `main.cpp` | nuScenes voxelization + postprocess params |
 | `lidar-postprocess.hpp` | nuScenes 10 classes, 8 anchors, bbox code size 9 |
+| `lidar-postprocess.cu` | NMS safety cap — prevents crash when bndbox_num_ is out of range |
 
 ---
 

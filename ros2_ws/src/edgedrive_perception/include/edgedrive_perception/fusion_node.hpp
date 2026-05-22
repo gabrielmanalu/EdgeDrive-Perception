@@ -104,7 +104,8 @@ private:
         const std::vector<BEVPoint>& cam_bev,
         const std::vector<BEVPoint>& lidar_bev,
         const std::vector<int>&      assignment,
-        const std_msgs::msg::Header& header);
+        const std_msgs::msg::Header& header,
+        int matched_count);
 
     int frame_count_ = 0;
 };

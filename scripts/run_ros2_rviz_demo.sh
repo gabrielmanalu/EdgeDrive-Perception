@@ -125,7 +125,7 @@ docker run --rm --runtime nvidia \
 
         # Start fusion node with nuScenes CAM_FRONT intrinsics
         ros2 run edgedrive_perception fusion_node --ros-args \
-            -p match_threshold:=5.0 \
+            -p match_threshold:=8.0 \
             -p sync_tolerance:=2.0 \
             -p camera_fx:=1266.417 \
             -p camera_fy:=1266.417 \

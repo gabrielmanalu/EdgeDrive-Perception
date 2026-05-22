@@ -67,21 +67,32 @@ struct PostProcessParameter {
     nvtype::Float3 min_range;
     nvtype::Float3 max_range;
     nvtype::Int2 feature_size;
-    int num_classes = 3;
-    int num_anchors = 6;
+    
+    // BUG FIX: Updated to nuScenes parameters
+    int num_classes = 10;
+    int num_anchors = 8;
     int len_per_anchor = 4;
+    
+    // Anchors based on mmdet3d sizes: 
+    // [2.5981, 0.866, 1.0], [1.7321, 0.5774, 1.0], [1.0, 1.0, 1.0], [0.4, 0.4, 1]
+    // Rotations: [0, 1.57]
     float anchors[32] = {
-            3.9,1.6,1.56,0.0,
-            3.9,1.6,1.56,1.57,
-            0.8,0.6,1.73,0.0,
-            0.8,0.6,1.73,1.57,
-            1.76,0.6,1.73,0.0,
-            1.76,0.6,1.73,1.57,
-        };
-    nvtype::Float3 anchor_bottom_heights{-1.78,-0.6,-0.6};
-    int num_box_values = 9;
+        2.5981, 0.866, 1.0, 0.0,
+        2.5981, 0.866, 1.0, 1.57,
+        1.7321, 0.5774, 1.0, 0.0,
+        1.7321, 0.5774, 1.0, 1.57,
+        1.0, 1.0, 1.0, 0.0,
+        1.0, 1.0, 1.0, 1.57,
+        0.4, 0.4, 1.0, 0.0,
+        0.4, 0.4, 1.0, 1.57
+    };
+    
+    // Z-center of the anchor. From your config: ranges Z = -1.8
+    nvtype::Float3 anchor_bottom_heights{-1.8, -1.8, -1.8}; 
+    
+    int num_box_values = 9; // x,y,z,w,l,h,yaw,vx,vy
     float score_thresh = 0.1;
-    float dir_offset = 0.78539;
+    float dir_offset = 0.78539; // Note: You already have this here!
     float nms_thresh = 0.01;
 };
 

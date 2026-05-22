@@ -139,6 +139,7 @@ __global__ void postprocess_kernal(const float *cls_input,
     float val = box_enc[6] - dir_offset;
     float dir_rot = val - floor(val / (period + 1e-8) + 0.f) * period;
     yaw = dir_rot + dir_offset + period * dir_label;
+    yaw = yaw - dir_offset; 
 
     int resCount = (int)atomicAdd(object_counter, 1);
     float *data = bndbox_output + resCount * 9;

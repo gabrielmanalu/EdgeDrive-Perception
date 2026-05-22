@@ -23,7 +23,7 @@ namespace edgedrive {
 FusionNode::FusionNode(const rclcpp::NodeOptions& options)
     : Node("fusion_node", options)
 {
-    match_threshold_ = declare_parameter("match_threshold", 3.0f);
+    match_threshold_ = declare_parameter("match_threshold", 8.0f);
     camera_height_   = declare_parameter("camera_height",   1.2f);
     fx_              = declare_parameter("camera_fx",       640.0f);
     fy_              = declare_parameter("camera_fy",       640.0f);
@@ -117,16 +117,18 @@ void FusionNode::fusionCallback(
     }
 
     fused_pub_->publish(fused_msg);
-    publishMarkers(cam_bev, lidar_bev, assignment, fused_msg.header);
+
+    int matched_count = 0;
+    for (auto a : assignment) if (a >= 0) matched_count++;
+
+    publishMarkers(cam_bev, lidar_bev, assignment, fused_msg.header, matched_count);
 
     if (frame_count_ % 5 == 0) {
-        int matched = 0;
-        for (auto a : assignment) if (a >= 0) matched++;
         RCLCPP_INFO(get_logger(),
             "Frame %d: cam=%zu lidar=%zu matched=%d fused=%zu",
             frame_count_,
             cam_bev.size(), lidar_bev.size(),
-            matched, fused_msg.detections.size());
+            matched_count, fused_msg.detections.size());
     }
 }
 
@@ -264,7 +266,8 @@ void FusionNode::publishMarkers(
     const std::vector<BEVPoint>& cam_bev,
     const std::vector<BEVPoint>& lidar_bev,
     const std::vector<int>&      assignment,
-    const std_msgs::msg::Header& header)
+    const std_msgs::msg::Header& header,
+    int matched_count)
 {
     visualization_msgs::msg::MarkerArray arr;
 
@@ -381,7 +384,7 @@ void FusionNode::publishMarkers(
         arr.markers.push_back(txt);
     };
 
-    // Red — matched (fused)
+    // Red — matched (fused): average camera + LiDAR BEV position
     for (int ci = 0; ci < (int)assignment.size(); ci++) {
         int li = assignment[ci];
         if (li < 0) continue;
@@ -390,7 +393,7 @@ void FusionNode::publishMarkers(
         float x = (cam_bev[ci].x + lidar_bev[li].x) * 0.5f;
         float y = (cam_bev[ci].y + lidar_bev[li].y) * 0.5f;
         float score = 0.6f * lidar_bev[li].score + 0.4f * cam_bev[ci].score;
-        std::string lbl = lidar_bev[li].class_id.empty()
+        std::string lbl = (!cam_bev[ci].class_id.empty())
                         ? cam_bev[ci].class_id
                         : lidar_bev[li].class_id;
         make_cylinder(x, y, score, 0.9f, 0.1f, 0.1f, "fused", lbl);
@@ -412,6 +415,31 @@ void FusionNode::publishMarkers(
                       lidar_bev[li].score,
                       0.2f, 0.6f, 1.0f, "lidar_only",
                       lidar_bev[li].class_id);
+    }
+
+    int matched_cnt = 0;
+    for (auto a : assignment) if (a >= 0) matched_cnt++;
+
+    // Stats overlay — white text in top-left of BEV
+    {
+        visualization_msgs::msg::Marker txt;
+        txt.header     = header;
+        txt.ns         = "stats";
+        txt.id         = 9999;
+        txt.type       = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
+        txt.action     = visualization_msgs::msg::Marker::ADD;
+        txt.pose.position.x = 45.0f;
+        txt.pose.position.y = -45.0f;
+        txt.pose.position.z =  3.0f;
+        txt.pose.orientation.w = 1.0;
+        txt.scale.z    = 3.0;
+        txt.color.r = txt.color.g = txt.color.b = txt.color.a = 1.0f;
+        std::ostringstream ss;
+        ss << "CAM: "   << cam_bev.size()
+           << "  LiDAR: " << lidar_bev.size()
+           << "  FUSED: " << matched_cnt;
+        txt.text = ss.str();
+        arr.markers.push_back(txt);
     }
 
     marker_pub_->publish(arr);

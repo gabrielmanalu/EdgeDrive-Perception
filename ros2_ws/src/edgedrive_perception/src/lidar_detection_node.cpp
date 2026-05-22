@@ -41,7 +41,7 @@ static const std::vector<std::string> NUSCENES_CLASSES = {
     "trailer",              // 4
     "barrier",              // 5
     "motorcycle",           // 6
-    "pedestrian",           // 7  ← confirmed from Colab inference
+    "pedestrian",           // 7
     "bicycle",              // 8
     "traffic_cone"          // 9
 };
@@ -207,7 +207,6 @@ void LidarDetectionNode::lidarCallback(
     if (publish_markers_ && marker_pub_)
         publishMarkers(filtered, det_msg.header);
 
-    // Log every 10 frames
     frame_count_++;
     if (frame_count_ % 10 == 0) {
         RCLCPP_INFO(get_logger(),
@@ -227,6 +226,7 @@ void LidarDetectionNode::publishMarkers(
     // Delete previous markers
     visualization_msgs::msg::Marker del;
     del.header = header;
+    del.header.frame_id = "base_link";
     del.action = visualization_msgs::msg::Marker::DELETEALL;
     marker_array.markers.push_back(del);
 
@@ -235,15 +235,15 @@ void LidarDetectionNode::publishMarkers(
         // ── Cylinder marker ───────────────────────────────────────────────────
         visualization_msgs::msg::Marker cyl;
         cyl.header    = header;
+        cyl.header.frame_id = "base_link";
         cyl.ns        = "lidar_detections";
         cyl.id        = id++;
         cyl.type      = visualization_msgs::msg::Marker::CYLINDER;
         cyl.action    = visualization_msgs::msg::Marker::ADD;
 
-        // nuScenes LiDAR: +X=ego_right, +Y=ego_forward
-        // ego_forward = lidar_Y, ego_left = -lidar_X
-        cyl.pose.position.x  =  b.y;  // ego forward = +LiDAR_Y
-        cyl.pose.position.y  = -b.x;  // ego left = -LiDAR_X
+        // Directly map coordinates since network output is now base_link aligned
+        cyl.pose.position.x  = b.x;
+        cyl.pose.position.y  = b.y;
         cyl.pose.position.z  = 0.0;
         cyl.pose.orientation.w = 1.0;
 
@@ -261,13 +261,14 @@ void LidarDetectionNode::publishMarkers(
         // ── Text label ────────────────────────────────────────────────────────
         visualization_msgs::msg::Marker txt;
         txt.header    = header;
+        txt.header.frame_id = "base_link";
         txt.ns        = "lidar_labels";
         txt.id        = id++;
         txt.type      = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
         txt.action    = visualization_msgs::msg::Marker::ADD;
 
-        txt.pose.position.x =  b.y;
-        txt.pose.position.y = -b.x;
+        txt.pose.position.x = b.x;
+        txt.pose.position.y = b.y;
         txt.pose.position.z = cyl.scale.z + 0.3f;
         txt.pose.orientation.w = 1.0;
         txt.scale.z = 0.4f;

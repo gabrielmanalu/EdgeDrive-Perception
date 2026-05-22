@@ -141,6 +141,11 @@ std::vector<BEVPoint> FusionNode::cameraDetsToBEV(
     std::vector<BEVPoint> result;
     for (int i = 0; i < (int)msg.detections.size(); i++) {
         const auto& det = msg.detections[i];
+
+        // Skip barriers — not useful for fusion
+        if (!det.results.empty() &&
+            det.results[0].hypothesis.class_id == "barrier") continue;
+
         float u = det.bbox.center.position.x;
         float v = det.bbox.center.position.y + det.bbox.size_y * 0.5f; // bottom
 

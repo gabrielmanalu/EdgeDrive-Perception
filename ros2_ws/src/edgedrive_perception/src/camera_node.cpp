@@ -123,7 +123,12 @@ void CameraNode::imageCallback(
 
     // ── Publish annotated image ───────────────────────────────────────────────
     if (publish_viz_ && viz_pub_) {
-        cv::Mat annotated = decoder_->draw(frame, dets);
+        // Filter out barriers from visualization — too noisy in BEV and not useful to show in image
+        std::vector<Detection> filtered_dets;
+        for (const auto& d : dets) {
+            if (d.class_name != "barrier") filtered_dets.push_back(d);
+        }
+        cv::Mat annotated = decoder_->draw(frame, filtered_dets);
         std::string fps_str = "FPS: " +
             std::to_string(static_cast<int>(profiler_->meanFPS())) +
             "  TRT: " +
@@ -170,6 +175,9 @@ vision_msgs::msg::Detection2DArray CameraNode::toRosMsg(
     msg.header = header;
 
     for (const auto& d : dets) {
+        // Skip barriers
+        if (d.class_name == "barrier") continue;
+
         vision_msgs::msg::Detection2D det;
         det.header = header;
 
@@ -214,21 +222,11 @@ void CameraNode::publishMarkers(
     delete_marker.action = visualization_msgs::msg::Marker::DELETEALL;
     marker_array.markers.push_back(delete_marker);
 
-    // Class colors (BGR → RGB for RViz2)
-    // Matches YOLO26Decoder::CLASS_COLORS
-    static const std::vector<std::array<float,3>> CLASS_COLORS_RGB = {
-        {1.0f, 1.0f, 0.0f},   // car          yellow
-        {1.0f, 0.0f, 0.0f},   // pedestrian   red
-        {0.0f, 1.0f, 0.0f},   // bicycle      green
-        {0.0f, 1.0f, 0.0f},   // motorcycle   green
-        {0.0f, 1.0f, 1.0f},   // bus          cyan
-        {1.0f, 0.5f, 0.0f},   // truck        orange
-        {1.0f, 1.0f, 1.0f},   // traffic_cone white
-        {1.0f, 0.0f, 1.0f},   // barrier      magenta
-    };
-
     int id = 0;
     for (const auto& det : dets) {
+        // Skip barriers — too noisy for BEV visualization
+        if (det.class_name == "barrier") continue;
+
         // Bottom-center of bounding box = ground contact point
         float u = (det.x1 + det.x2) * 0.5f;
         float v =  det.y2;
@@ -266,12 +264,11 @@ void CameraNode::publishMarkers(
         cyl.scale.y = est_w_m;
         cyl.scale.z = det.score * 2.0f;  // height = confidence (max 2m)
 
-        // Color by class
-        auto& col = CLASS_COLORS_RGB[
-            std::min((int)det.class_id, (int)CLASS_COLORS_RGB.size()-1)];
-        cyl.color.r = col[0];
-        cyl.color.g = col[1];
-        cyl.color.b = col[2];
+        // Single green color for all camera detections
+        // (red=fused, green=camera, blue=lidar in the fusion view)
+        cyl.color.r = 0.1f;
+        cyl.color.g = 0.9f;
+        cyl.color.b = 0.1f;
         cyl.color.a = 0.7f;
 
         cyl.lifetime = rclcpp::Duration::from_seconds(1.0);

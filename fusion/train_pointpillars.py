@@ -1,9 +1,10 @@
 """
-PointPillars Setup, Dataset Preparation & Inference Test
-=========================================================
+PointPillars Setup, Dataset Preparation, Inference Test & FPN3 ONNX Export
+===========================================================================
 Sets up MMDetection3D, downloads pre-trained PointPillars weights,
-prepares nuScenes dataset annotation files, and runs a single-frame
-inference test to verify the pipeline works.
+prepares nuScenes dataset annotation files, runs a single-frame
+inference test to verify the pipeline works, and exports the FPN3
+ONNX for TensorRT deployment on Jetson.
 
 Why pre-trained weights instead of training from scratch:
     Training PointPillars on full nuScenes from scratch requires:
@@ -44,6 +45,13 @@ ONNX/TensorRT export note:
     provides a complete C++ TensorRT pipeline:
     https://github.com/NVIDIA-AI-IOT/CUDA-PointPillars
 
+    This script exports the FPN3 ONNX directly (all 3 FPN levels),
+    which is required for complete nuScenes 10-class detection:
+        Level 0 (200×200): pedestrian, bicycle, traffic_cone, barrier
+        Level 1 (100×100): car, construction_vehicle
+        Level 2 ( 50× 50): truck, bus, trailer
+    Single-level export (feat[0] only) misses all cars and large objects.
+
 Installation (run once per Colab session):
     # Must use PyTorch 2.1.0 + CUDA 12.1 for mmcv pre-built wheels
     pip install torch==2.1.0 torchvision==0.16.0 \
@@ -67,6 +75,9 @@ Usage:
         --nuscenes_root /data/sets/nuscenes \
         --weights_dir   ./pointpillars_weights \
         --mmdet3d_dir   ./mmdetection3d
+
+    # Skip to ONNX export only (if model already loaded):
+    python train_pointpillars.py --skip_download --skip_data_prep --export_onnx
 """
 
 import os
@@ -95,7 +106,7 @@ CLASS_NAMES = [
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description='PointPillars setup, dataset prep and inference test'
+        description='PointPillars setup, dataset prep, inference test and ONNX export'
     )
     parser.add_argument('--nuscenes_root', default='/data/sets/nuscenes',
                         help='Path to nuScenes dataset root')
@@ -109,6 +120,10 @@ def parse_args():
                         help='Skip weight download if already exists')
     parser.add_argument('--skip_data_prep', action='store_true',
                         help='Skip pkl generation if already exists')
+    parser.add_argument('--export_onnx', action='store_true',
+                        help='Export FPN3 ONNX after inference test')
+    parser.add_argument('--onnx_output', default='pointpillars_nuscenes_fpn3.onnx',
+                        help='Output path for FPN3 ONNX file')
     return parser.parse_args()
 
 
@@ -268,11 +283,111 @@ def run_inference_test(model, nuscenes_root):
     return boxes_np, scores_np, labels_np
 
 
+def export_fpn3_onnx(model, output_path):
+    """
+    Export all 3 FPN levels as a single ONNX with 9 outputs.
+
+    Why FPN3 instead of single level:
+        The original CUDA-PointPillars exports only feat[0] (200×200, scale=1).
+        This detects only small/close objects (pedestrians, bicycles).
+        Cars are detected at feat[1] (100×100, scale=2).
+        Trucks/buses/trailers are detected at feat[2] (50×50, scale=4).
+        All 3 levels are required for complete nuScenes 10-class detection.
+
+    Output tensor layout (9 outputs):
+        cls_l0: [1, 80, 200, 200]  ← 8 anchors × 10 classes, level 0
+        box_l0: [1, 72, 200, 200]  ← 8 anchors × 9 box params
+        dir_l0: [1, 16, 200, 200]  ← 8 anchors × 2 dir bins
+        cls_l1: [1, 80, 100, 100]
+        box_l1: [1, 72, 100, 100]
+        dir_l1: [1, 16, 100, 100]
+        cls_l2: [1, 80,  50,  50]
+        box_l2: [1, 72,  50,  50]
+        dir_l2: [1, 16,  50,  50]
+
+    Input:
+        pseudo_image: [1, 64, 400, 400]  ← CHW pillar scatter output
+
+    TensorRT engine build (on Jetson after transfer):
+        trtexec \
+            --onnx=pointpillars_nuscenes_fpn3.onnx \
+            --fp16 \
+            --plugins=libpointpillar_core.so \
+            --saveEngine=pointpillar_fpn3.plan
+    """
+    import torch
+    import torch.nn as nn
+
+    class PointPillarsFullFPN(nn.Module):
+        def __init__(self, model):
+            super().__init__()
+            self.backbone = model.pts_backbone
+            self.neck     = model.pts_neck
+            self.head     = model.pts_bbox_head
+
+        def forward(self, x):
+            feats = self.backbone(x)
+            feats = self.neck(feats)
+            cls_list, box_list, dir_list = [], [], []
+            for f in feats:
+                c, b, d = self.head.forward_single(f)
+                cls_list.append(c)
+                box_list.append(b)
+                dir_list.append(d)
+            # Return all 3 FPN levels — postprocessor handles each separately
+            return (cls_list[0], box_list[0], dir_list[0],   # level 0: 200×200
+                    cls_list[1], box_list[1], dir_list[1],   # level 1: 100×100
+                    cls_list[2], box_list[2], dir_list[2])   # level 2:  50×50
+
+    print("\nExporting FPN3 ONNX...")
+    wrapper = PointPillarsFullFPN(model).cuda().eval()
+
+    # Pseudo-image: output of CHW scatter kernel
+    # Shape: [batch, pillar_features, grid_y, grid_x] = [1, 64, 400, 400]
+    dummy = torch.zeros(1, 64, 400, 400).cuda()
+
+    # Verify output shapes before export
+    with torch.no_grad():
+        outputs = wrapper(dummy)
+        print("  Output shapes:")
+        names = ['cls_l0', 'box_l0', 'dir_l0',
+                 'cls_l1', 'box_l1', 'dir_l1',
+                 'cls_l2', 'box_l2', 'dir_l2']
+        for name, out in zip(names, outputs):
+            print(f"    {name}: {list(out.shape)}")
+
+    import torch.onnx
+    torch.onnx.export(
+        wrapper,
+        dummy,
+        output_path,
+        opset_version=11,
+        input_names=['pseudo_image'],
+        output_names=names,
+        dynamic_axes={'pseudo_image': {0: 'batch'}},
+        verbose=False
+    )
+
+    size_mb = os.path.getsize(output_path) / 1024 / 1024
+    print(f"\n✅ Exported: {output_path} ({size_mb:.1f} MB)")
+
+    # Validate ONNX
+    import onnx
+    onnx.checker.check_model(onnx.load(output_path))
+    print(f"✅ ONNX valid")
+    print(f"\nNext step — build TRT engine on Jetson:")
+    print(f"  trtexec \\")
+    print(f"    --onnx={output_path} \\")
+    print(f"    --fp16 \\")
+    print(f"    --plugins=<path>/libpointpillar_core.so \\")
+    print(f"    --saveEngine=pointpillar_fpn3.plan")
+
+
 def main():
     args = parse_args()
 
     print("=" * 55)
-    print("PointPillars Setup & Inference Test")
+    print("PointPillars Setup, Inference Test & ONNX Export")
     print("=" * 55)
 
     # Step 1 — Clone MMDetection3D
@@ -297,9 +412,15 @@ def main():
         model, args.nuscenes_root
     )
 
+    # Step 7 — Export FPN3 ONNX (if requested or by default)
+    if args.export_onnx or True:  # export by default
+        export_fpn3_onnx(model, args.onnx_output)
+
     print(f"\n{'=' * 55}")
-    print(f"✅ Setup complete. Ready for inference and BEV visualization.")
-    print(f"   See pointpillars_inference.py for full pipeline.")
+    print(f"✅ Setup complete.")
+    print(f"   ONNX : {args.onnx_output}")
+    print(f"   Next : transfer to Jetson + build TRT engine")
+    print(f"   See  : cuda-pointpillars-patches/README.md")
     print(f"{'=' * 55}")
 
 

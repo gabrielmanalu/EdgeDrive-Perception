@@ -9,7 +9,6 @@ Package  : edgedrive_perception
 ROS2     : Humble
 Container: edgedrive-ros2:latest (l4t-jetpack:r36.4.0 + ROS2 Humble)
 TRT      : 10.3.0 (matches host engines — no rebuild needed)
-Status   : camera_node ✅ | lidar_detection_node ✅ | fusion_node ⬜
 ```
 
 ---
@@ -25,15 +24,16 @@ ros2_ws/
         ├── include/edgedrive_perception/
         │   ├── camera_node.hpp      ← YOLO26n detection node
         │   ├── lidar_detection_node.hpp ← CUDA-PointPillars ROS2 node
-        │   └── fusion_node.hpp      ← camera-LiDAR fusion (⬜ planned)
+        │   └── fusion_node.hpp      ← camera-LiDAR late fusion
         ├── src/
         │   ├── camera_node.cpp      ← YOLO26n TRT inference
-        │   └── lidar_detection_node.cpp ← CUDA-PointPillars TRT inference
+        │   ├── lidar_detection_node.cpp ← CUDA-PointPillars TRT inference
+        │   └── fusion_node.cpp      ← BEV matching + MarkerArray visualization
         ├── launch/
         │   └── camera.launch.py     ← configurable launch file
         └── config/
             ├── camera_node.yaml     ← default parameters
-            └── edgedrive.rviz       ← RViz2 auto-config (camera + LiDAR MarkerArrays + Image)
+            └── edgedrive.rviz       ← RViz2 auto-config (camera + LiDAR + fusion)
 ```
 
 ---
@@ -44,6 +44,7 @@ ros2_ws/
 
 YOLO26n TRT INT8 detection node. Subscribes to a camera image topic,
 runs TensorRT inference, publishes detection results.
+Barriers are filtered from all outputs (annotated image, Detection2DArray, MarkerArray).
 
 **Subscribes:**
 | Topic | Type | Description |
@@ -72,12 +73,13 @@ runs TensorRT inference, publishes detection results.
 
 ---
 
-
 ### lidar_detection_node
 
-CUDA-PointPillars TRT FP16 detection node. Subscribes to a LiDAR
-PointCloud2 topic, runs voxelization → CHW scatter → TRT backbone → NMS,
+CUDA-PointPillars FPN3 TRT FP16 detection node. Subscribes to a LiDAR
+PointCloud2 topic, runs voxelization → CHW scatter → TRT FPN3 backbone → NMS,
 publishes Detection3DArray + MarkerArray (blue cylinders in RViz2).
+
+Detects all 10 nuScenes classes across full 100m × 100m range using 3 FPN levels.
 
 **Subscribes:**
 | Topic | Type | Description |
@@ -87,15 +89,27 @@ publishes Detection3DArray + MarkerArray (blue cylinders in RViz2).
 **Publishes:**
 | Topic | Type | Description |
 |---|---|---|
-| `/detections/lidar` | `vision_msgs/Detection3DArray` | 3D bounding boxes + class + score |
+| `/detections/lidar` | `vision_msgs/Detection3DArray` | 3D bounding boxes in ego frame |
 | `/detections/lidar_markers` | `visualization_msgs/MarkerArray` | Blue 3D cylinders → RViz2 BEV |
 
 **Parameters:**
 | Parameter | Default | Description |
 |---|---|---|
-| `engine_path` | `cuda-pointpillars/model/pointpillar.plan` | TRT plan file |
+| `engine_path` | `cuda-pointpillars/model/pointpillar_fpn3.plan` | TRT FPN3 plan file |
 | `score_threshold` | `0.15` | Detection confidence threshold |
 | `publish_markers` | `true` | Publish RViz2 MarkerArray |
+
+**Coordinate transform (LiDAR→ego frame):**
+```
+nuScenes LIDAR_TOP quaternion: [0.7077955, -0.006492, 0.010646, -0.7063073]
+→ ego_forward = -LiDAR_Y
+→ ego_left    = +LiDAR_X
+(derived from calibrated_sensor rotation matrix, verified empirically)
+```
+
+**Performance:** ~25-30ms per frame, ~37-45 FPS. FPN3 uses 2 levels in ROS2
+(level 0: pedestrian/bicycle, level 1: cars) to stay within memory budget
+when running concurrently with camera_node.
 
 **Prerequisites:**
 ```bash
@@ -109,24 +123,50 @@ publishes Detection3DArray + MarkerArray (blue cylinders in RViz2).
 
 ---
 
-### fusion_node (planned)
+### fusion_node
 
-Camera-LiDAR late fusion node using ApproximateTime synchronization.
+Camera-LiDAR late fusion node. ApproximateTime sync subscribes to both
+detection streams and matches camera BEV projections against LiDAR 3D
+detections using BEV distance matching.
 
 **Subscribes:**
 | Topic | Type | Description |
 |---|---|---|
-| `/camera/image_raw` | `sensor_msgs/Image` | Camera frames |
-| `/lidar/pointcloud` | `sensor_msgs/PointCloud2` | LiDAR point cloud |
+| `/detections/camera` | `vision_msgs/Detection2DArray` | 2D camera detections |
+| `/detections/lidar` | `vision_msgs/Detection3DArray` | 3D LiDAR detections |
 
 **Publishes:**
 | Topic | Type | Description |
 |---|---|---|
-| `/detections/fused` | `vision_msgs/Detection3DArray` | Fused 3D detections |
-| `/visualization/fused` | `visualization_msgs/MarkerArray` | RViz2 markers |
+| `/detections/fused` | `vision_msgs/Detection3DArray` | Fused + unmatched LiDAR detections |
+| `/visualization/fused` | `visualization_msgs/MarkerArray` | Red=fused, Green=cam-only, Blue=lidar-only |
 
-Requires CUDA-PointPillars on Jetson for LiDAR branch.
-See [`docs/sensor_fusion_analysis.md`](../docs/sensor_fusion_analysis.md).
+**Parameters:**
+| Parameter | Default | Description |
+|---|---|---|
+| `match_threshold` | `8.0` | BEV distance threshold (meters) |
+| `sync_tolerance` | `2.0` | ApproximateTime tolerance (seconds) |
+| `camera_fx` | `1266.417` | nuScenes CAM_FRONT intrinsic |
+| `camera_fy` | `1266.417` | |
+| `camera_cx` | `816.267` | |
+| `camera_cy` | `491.507` | |
+| `camera_height` | `1.5` | Camera height above ground (m) |
+
+**Camera BEV projection:**
+```
+Z = camera_height × fy / (v_bottom - cy)   ← forward depth
+X = (u - cx) × Z / fx                       ← lateral
+BEV = (Z, -X)                               ← (forward, left) in ego frame
+```
+
+**Fusion score:** `0.6 × lidar_score + 0.4 × camera_score`
+Camera class label used when matched (higher semantic confidence).
+
+**Match rate:** 40–100% of camera detections fused per frame.
+
+**Stats overlay:** Live `CAM: N  LiDAR: N  FUSED: N` text in RViz2 BEV.
+
+See [`docs/sensor_fusion_analysis.md`](../docs/sensor_fusion_analysis.md) for full design details.
 
 ---
 
@@ -135,51 +175,38 @@ See [`docs/sensor_fusion_analysis.md`](../docs/sensor_fusion_analysis.md).
 ### Build
 
 ```bash
-# Inside edgedrive-ros2 container
+# Build CUDA-PointPillars .so first
+cd ~/EdgeDrive-Perception/cuda-pointpillars/build
+export CUDASM=87 && make -j4
+
+# Build Docker image (copies .so + builds all 3 nodes)
+cd ~/EdgeDrive-Perception
+docker build -t edgedrive-ros2:latest -f docker/Dockerfile.ros2 .
+```
+
+Or rebuild nodes only inside container:
+```bash
 docker compose -f docker/docker-compose.ros2.yml run --rm dev \
     bash -c "cd /workspace/ros2_ws && colcon build --packages-select edgedrive_perception"
 ```
 
-Or rebuild the full image:
-```bash
-docker build -t edgedrive-ros2:latest -f docker/Dockerfile.ros2 .
-```
-
-### Run — RViz2 visualization (camera + LiDAR)
+### Run — full fusion demo with RViz2
 
 ```bash
+sudo nvpmodel -m 2    # 25W mode — required for dual TRT engines
 sudo jetson_clocks
 xhost +local:docker
 ./scripts/run_ros2_rviz_demo.sh
 ```
 
-Starts TF + bag + camera_node + lidar_detection_node + RViz2 in one container.
-RViz2 config auto-loads:
+Starts TF + bag + camera_node + lidar_detection_node + fusion_node + RViz2
+in one container. RViz2 auto-loads:
 ```
-Fixed Frame : base_link
+Fixed Frame     : base_link
 Green cylinders : /detections/camera_markers  (camera BEV projection)
 Blue cylinders  : /detections/lidar_markers   (CUDA-PointPillars 3D)
-Image panel     : /camera/annotated           (annotated camera feed)
-```
-
-**Note:** Green and blue cylinders are in different coordinate frames
-(camera pinhole projection vs LiDAR 3D). Alignment requires extrinsic
-calibration — implemented in fusion_node.
-
-### Run — RViz2 visualization (full demo)
-
-```bash
-sudo jetson_clocks
-xhost +local:docker
-./scripts/run_ros2_rviz_demo.sh
-```
-
-Starts TF publisher + bag replay + camera_node + RViz2 in one container.
-RViz2 config auto-loads from `config/edgedrive.rviz`:
-```
-Fixed Frame : base_link             ← pre-configured
-MarkerArray : /detections/camera_markers ← pre-loaded
-Image       : /camera/annotated          ← pre-loaded
+Red cylinders   : /visualization/fused        (matched detections)
+Image panel     : /camera/annotated
 ```
 
 ### Run — live USB camera
@@ -233,8 +260,10 @@ docker compose -f docker/docker-compose.ros2.yml run --rm camera-node
 
 | Mode | FPS | Pre | TRT | Input |
 |---|---|---|---|---|
-| nuScenes bag (jetson_clocks) | ~180 | 1.8ms | 3.7ms | 1600×900 |
-| USB camera (jetson_clocks) | ~205 | 1.1ms | 3.7ms | 1280×720 |
+| camera_node (jetson_clocks) | ~180 | 1.8ms | 3.7ms | 1600×900 nuScenes |
+| camera_node USB (jetson_clocks) | ~205 | 1.1ms | 3.7ms | 1280×720 |
+| lidar_detection_node | ~37-45 | 0.2ms | 13-17ms | 43K pts nuScenes |
+| fusion_node match rate | — | — | <1ms | 40–100% cam dets |
 
 FPS is hardware capability — actual detection rate limited by input source
 (nuScenes bag publishes at 2 Hz, USB camera at 30 Hz).
@@ -259,7 +288,13 @@ ros2 run edgedrive_perception camera_node --ros-args \
 ```
 
 **Container vs host binary:**
-The compiled binary lives inside the container at build time.
-Mounting `-v ~/EdgeDrive-Perception:/workspace` overwrites it.
-Use compose services (camera-node, camera-node-bev) which mount
+The compiled binaries live inside the container at build time.
+Mounting `-v ~/EdgeDrive-Perception:/workspace` overwrites them.
+Use compose services (camera-node, lidar-node) which mount
 only specific subdirectories.
+
+**Power mode for fusion demo:**
+Running camera_node (INT8) + lidar_detection_node (FP16) requires 15W or 25W:
+```bash
+sudo nvpmodel -m 2
+```

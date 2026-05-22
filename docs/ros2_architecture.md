@@ -16,7 +16,7 @@ nuScenes bag / USB camera / CSI camera
     │                   │    202 FPS standalone
     │  trt_engine.cpp   │    ~180 FPS via ROS2 topics
     │  yolo26_decoder   │    (1600×900 nuScenes input)
-    │  bev_visualizer   │
+    │  bev_visualizer   │    barriers filtered from all outputs
     └───────────────────┘
             │                    │                    │                    │
             │ Detection2DArray   │ Image (annotated)  │ Image (BEV)        │ MarkerArray
@@ -29,11 +29,11 @@ nuScenes LiDAR bag
             │ sensor_msgs/PointCloud2
             ▼
     ┌─────────────────────────┐
-    │  CUDA-PointPillars      │  ← standalone C++ 
+    │  CUDA-PointPillars FPN3 │  ← standalone C++
     │                         │    ~25-30ms, ~37-45 FPS
     │  lidar-voxelization.cu  │    43,440 pts/frame
     │  pillarScatterCHW kernel│    140-191 detections/frame
-    │  TRT backbone FP16      │
+    │  TRT FPN3 backbone FP16 │    10 classes, 3 FPN levels
     │  lidar-postprocess.cu   │
     └─────────────────────────┘
             │
@@ -41,20 +41,22 @@ nuScenes LiDAR bag
     ┌─────────────────────────┐
     │  lidar_detection_node   │ 
     │                         │  ← subscribes /nuscenes/lidar/pointcloud
-    │  links libpointpillar   │    publishes /detections/lidar_markers
-    │  _core.so               │    blue cylinders in RViz2
+    │  links libpointpillar   │    publishes /detections/lidar (Detection3DArray)
+    │  _core.so               │    publishes /detections/lidar_markers (blue → RViz2)
     └─────────────────────────┘
             │
             ▼
     ┌───────────────────┐
-    │   fusion_node     │  ← Hungarian matching
-    │                   │    ApproximateTime sync
-    │  late_fusion.cpp  │    BEV projection
+    │   fusion_node     │     ← Hungarian BEV matching
+    │                   │       ApproximateTime sync
+    │  late_fusion.cpp  │       BEV projection + angular distance
     └───────────────────┘
             │                         │
             │ Detection3DArray        │ MarkerArray
             ▼                         ▼
     /detections/fused         /visualization/fused → RViz2
+                                Red=fused | Green=cam | Blue=lidar
+                                + live stats overlay (CAM/LiDAR/FUSED count)
 ```
 
 ---
@@ -81,8 +83,6 @@ edgedrive container (production):
 
 ## Topic Graph
 
-### Current
-
 ```
 [rosbag2 player]──/nuscenes/camera/image_raw──►[camera_node]
                                                      │
@@ -92,37 +92,26 @@ edgedrive container (production):
                                     │                                     │
                               (Detection2DArray)                    (MarkerArray)
                               header, detections[]:               green cylinders
-                                bbox.center.x/y                   in RViz2 BEV
-                                bbox.size_x/y
+                                bbox.center.x/y  (pixels)         in RViz2 BEV
                                 results[0].class_id
                                 results[0].score
+                                (barriers excluded)
 
-[rosbag2 player]──/nuscenes/lidar/pointcloud ─►[CUDA-PointPillars C++ 
-                                                    ─► lidar_detection_node]
-                                                     │
+[rosbag2 player]──/nuscenes/lidar/pointcloud──►[lidar_detection_node]
                                                      │
                         ┌────────────────────────────┤
                         │                            │
              /detections/lidar          /detections/lidar_markers
              (Detection3DArray)          (blue cylinders → RViz2)
-             x,y,z,w,l,h,yaw,cls,score   25-30ms per frame
-```
+             ego-frame x,y,z,w,l,h      25-30ms per frame
+             cls,score (10 classes)     LiDAR→ego transform applied
 
-### Planned — fusion_node
 
-```
-[rosbag2 player]──/nuscenes/camera/image_raw──►[camera_node]──/detections/camera───►┐
-                │                                                                   │
-                └──/nuscenes/lidar/pointcloud──►[lidar_detection_node]              │
-                                                           │                        │
-                                                           ──►  /detections/lidar──►┤             
-                                                                                    │
-                                                                               [fusion_node]
-                                                                                    │
-                                                               ┌────────────────────┤
-                                                               │                    │
-                                                    /detections/fused    /visualization/fused
-                                                    (Detection3DArray)   (MarkerArray → RViz2)
+[/detections/camera] ──►┐
+                         ├──► [fusion_node] ──► /visualization/fused (MarkerArray → RViz2)
+[/detections/lidar]  ──►┘         │             Red=fused | Green=cam | Blue=lidar
+                                   │             Stats overlay: CAM/LiDAR/FUSED count
+                                   └──► /detections/fused (Detection3DArray)
 ```
 
 ---
@@ -164,6 +153,7 @@ scripts/nuscenes_to_ros2bag.py
     → reads nuScenes metadata + sensor data
     → writes rosbags .db3 format (version 8, ROS2 Humble compatible)
     → output: bags/nuscenes_scene0/ (187MB for 39 frames)
+    → camera + LiDAR share same sample['timestamp'] → always synchronized
 
 bags/nuscenes_scene0/
     ├── metadata.yaml          ← bag metadata
@@ -176,6 +166,51 @@ ros2 bag play bags/nuscenes_scene0
 
 ---
 
+## LiDAR Coordinate Transform
+
+nuScenes LIDAR_TOP is not axis-aligned with the ego vehicle frame.
+Transform derived from `calibrated_sensor` quaternion:
+
+```
+Quaternion: [0.7077955, -0.006492, 0.010646, -0.7063073]
+→ LiDAR +X maps to ego RIGHT
+→ LiDAR +Y maps to ego FORWARD
+
+Applied in lidar_detection_node:
+  det.bbox.center.position.x = -b.y   ← ego forward
+  det.bbox.center.position.y =  b.x   ← ego left
+
+Verified: raw output b.y=25.3 → car 25m ahead confirmed
+```
+
+---
+
+## Fusion Node
+
+**BEV Camera Projection:**
+```
+nuScenes CAM_FRONT: fx=fy=1266.417, cx=816.267, cy=491.507
+Camera height: 1.5m above ground
+
+Z = 1.5 × 1266.417 / (v_bottom - 491.507)  ← forward depth
+X = (u - 816.267) × Z / 1266.417            ← lateral
+BEV = (Z, -X)                                ← (forward, left)
+Valid: Z ∈ [1m, 60m]
+```
+
+**Matching:**
+```
+D[i,j] = euclidean(cam_bev[i], lidar_bev[j])
+Match if D[i,j] ≤ 8.0m
+Assignment: Hungarian greedy (minimize total distance)
+Match rate: 40–100% of camera detections per frame
+```
+
+**Fusion score:** `0.6 × lidar_score + 0.4 × camera_score`
+**Class label:** camera class used when matched (higher semantic confidence)
+
+---
+
 ## Performance Analysis
 
 | Condition | FPS | Pre | TRT | Note |
@@ -183,16 +218,14 @@ ros2 bag play bags/nuscenes_scene0
 | Standalone C++ (720p) | 203 | 1.1ms | 3.7ms | No ROS2 overhead |
 | ROS2 camera_node (720p) | ~195 | 1.1ms | 3.7ms | topic serialize overhead |
 | ROS2 camera_node (1600×900) | ~180 | 1.8ms | 4.0ms | nuScenes resolution |
-| CUDA-PointPillars (43K pts) | ~37-45 | 0.2ms vox | 13-17ms bb | - |
+| CUDA-PointPillars FPN3 (43K pts) | ~37-45 | 0.2ms vox | 13-17ms bb | 3-level FPN |
 | lidar_detection_node (ROS2) | ~2 | — | ~25-30ms/frame | gated by bag 2Hz |
+| fusion_node match rate | — | — | <1ms | 40–100% cam dets matched |
 
 ROS2 overhead is ~5 FPS due to:
 - `sensor_msgs/Image` serialization/deserialization per frame
 - `cv_bridge::toCvShare` copy (zero-copy not yet implemented)
 - DDS middleware latency
-
-At 2 Hz bag replay rate, the node processes each frame as fast as possible
-(~180 FPS) then waits for the next message. Mean FPS reflects burst speed.
 
 ---
 
@@ -209,9 +242,8 @@ Use compose services which mount only `weights/` and `bags/`.
 **DDS discovery between separate containers**
 Even with `--network host`, DDS multicast discovery sometimes fails
 between two separate containers. Solution: run bag replay and camera_node
-in the same container (as in `run_ros2_bag_demo.sh`).
+in the same container (as in `run_ros2_rviz_demo.sh`).
 
-**CUDA-PointPillars class labels may be inaccurate**
-Our simplified 4-size anchor set doesn't fully match all nuScenes 10-class
-anchors. Detection geometry and count are correct — class assignment will
-be refined when fusion_node is wired up. See `cuda-pointpillars-patches/`.
+**Power mode required for dual TRT engines**
+Running camera_node (INT8) + lidar_detection_node (FP16) simultaneously
+requires 25W / 15W mode: `sudo nvpmodel -m 2`. MAXN SUPER mode causes overcurrent.

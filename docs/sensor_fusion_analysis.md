@@ -1,6 +1,6 @@
-# Sensor Fusion Analysis
+# Sensor Fusion Analysis — EdgeDrive Perception
 
-Camera-LiDAR late fusion results on nuScenes Mini sample data.
+Camera-LiDAR late fusion design, implementation, and results on nuScenes.
 
 ---
 
@@ -11,11 +11,11 @@ Two fusion strategies were considered:
 ```
 Early/BEV fusion (e.g. BEVFusion):
   Pros: shared feature space, state-of-the-art mAP
-  Cons: ~200MB model, ~5 FPS on Jetson Orin Nano Super
+  Cons: ~200MB model, ~5 FPS on Jetson Orin Nano Super (67 TOPS)
   Verdict: not viable for real-time edge deployment
 
 Late fusion (this project):
-  Pros: 193 FPS camera + fast LiDAR → near real-time
+  Pros: 180 FPS camera + 37-45 FPS LiDAR → real-time on edge hardware
         each modality independently debuggable
         modular: swap either detector without retraining
   Cons: no shared feature learning, BEV projection approximation
@@ -27,127 +27,164 @@ Late fusion (this project):
 ## Pipeline
 
 ```
-Camera (YOLO26n-det):           LiDAR (PointPillars):
-  2D boxes (x1,y1,x2,y2)         3D boxes (x,y,z,w,l,h,yaw)
-  in image coordinates            in ego/vehicle coordinates
+Camera (YOLO26n-det TRT INT8):    LiDAR (PointPillars FPN3 TRT FP16):
+  2D boxes (u, v) in image px       3D boxes (x,y,z,w,l,h,yaw)
+  ~180 FPS, nuScenes CAM_FRONT      in LiDAR sensor frame
         │                                │
         ▼                                ▼
-  Ground plane projection          BEV projection (x,y)
-  (u,v) → (x,y) via K^-1          using box center
-  z = 0 assumption                 
+  Ground plane projection          LiDAR→Ego transform
+  (u,v) → (Z,X) via K^-1          ego_forward = -lidar_Y
+  Z = h × fy / (v - cy)           ego_left    = +lidar_X
+  X = (u - cx) × Z / fx           (from calibrated_sensor quaternion)
         │                                │
         └──────────────┬─────────────────┘
                        ▼
               BEV Distance Matching
-              D[i,j] = euclidean(cam[i], lidar[j])
-              + 5m penalty if class mismatch
-              threshold: 12m
+              D[i,j] = euclidean(cam_bev[i], lidar_bev[j])
+              threshold: 8m
+              assignment: Hungarian (greedy)
                        │
                        ▼
               Fused score = 0.6 × lidar + 0.4 × camera
-              (LiDAR weighted higher: metric accuracy)
+              Class label = camera class (higher semantic confidence)
                        │
               ┌────────┼────────┐
               ▼        ▼        ▼
-           Fused    LiDAR   Camera
-           dets     only    only
+            RED      GREEN    BLUE
+           Fused   Cam only  LiDAR only
 ```
 
 ---
 
-## Sample Results (nuScenes Mini, sample[1])
+## Camera BEV Projection
+
+**Intrinsics (nuScenes CAM_FRONT):**
+```
+fx = fy = 1266.417
+cx = 816.267
+cy = 491.507
+camera height = 1.5m (approximate ground plane)
+```
+
+**Ground plane assumption:**
+```
+v_bottom = bottom edge of 2D bounding box (ground contact point)
+Z = h × fy / (v_bottom - cy)   ← forward distance
+X = (u - cx) × Z / fx           ← lateral offset
+BEV position = (Z, -X)          ← (forward, left) in ego frame
+Valid range: Z ∈ [1m, 60m]
+```
+
+**Limitation:** Accuracy degrades for objects not on the ground plane (trucks,
+buses, elevated objects). Lateral error grows with distance (~15m error at 35m
+range). Angular matching compensates for this — see matching section.
+
+---
+
+## LiDAR Coordinate Transform
+
+**nuScenes LIDAR_TOP calibrated_sensor:**
+```
+translation: [0.943713, 0.0, 1.84023]  ← 1.84m above ground
+quaternion:  [0.7077955, -0.006492, 0.010646, -0.7063073]
+
+Rotation matrix:
+  LiDAR +X → ego: (0.002, -1.0,  0.0)  ← ego RIGHT
+  LiDAR +Y → ego: (1.0,   0.002, 0.0)  ← ego FORWARD
+
+Transform applied in lidar_detection_node:
+  ego_forward = -b.y
+  ego_left    = +b.x
+```
+
+This was verified empirically: raw LiDAR output `b.y=25.3` for a car 25m ahead
+confirms LiDAR +Y = ego forward.
+
+---
+
+## Matching Results — ROS2 Live (nuScenes scene0, 39 frames)
 
 ```
-Camera detections (YOLO26n-det):  9 objects
-LiDAR detections (PointPillars): 13 objects
+camera_node     : YOLO26n TRT INT8 → 2–11 detections/frame (barriers excluded)
+lidar_node      : CUDA-PP FPN3 FP16 → 0–16 detections/frame (score ≥ 0.15)
+fusion_node     : BEV distance matching, 8m threshold
 
-Fusion output:
-  Fused (matched)    : 13 detections
-  LiDAR-only         :  5 detections  ← occluded from camera
-  Camera-only        :  4 detections  ← below LiDAR range or low confidence
-  Total output       : 22 detections
+Typical frame breakdown:
+  cam=6 lidar=4 matched=3 fused=4   ← 50% cam matched
+  cam=6 lidar=8 matched=6 fused=8   ← 100% cam matched
+  cam=2 lidar=5 matched=2 fused=5   ← 100% cam matched
+  cam=5 lidar=3 matched=0 fused=3   ← 0% (LiDAR detections behind ego)
+
+Match rate: 40–100% of camera detections per frame (when LiDAR has detections)
 ```
 
 ---
 
-## Fusion Parameter Choices
+## Debugging Trail
 
-### Distance threshold: 12m
+Several coordinate system bugs were found and fixed during development:
 
-```
-Tested: 5m, 8m, 12m, 20m on sample[1]
+**1. Single FPN level (original)**
+Only level 0 (200×200, small anchors) was exported from mmdetection3d.
+Cars were not detected — they appear at level 1 (100×100, ×2 anchors).
+Fix: export all 3 FPN levels; confirmed by comparing standalone output
+(67-104 cars/frame) vs original (0 cars, only pedestrians mislabeled as bicycle).
 
-5m:  too strict → misses valid matches (camera BEV projection error)
-8m:  better, still misses some at range
-12m: best match count, no obvious false matches
-20m: too permissive → false matches at range
-```
+**2. Class ordering mismatch**
+Single-level model labeled all detections as class 7 = "bicycle".
+After FPN3 export and Colab `inference_detector` verification:
+  - class 0 = car ✅, class 7 = pedestrian ✅, class 8 = bicycle ✅
+Fix: updated `NUSCENES_CLASSES[]` array ordering in lidar_detection_node.
 
-BEV projection via K^-1 accumulates error at distance. A 30m object
-with 5% projection error = 1.5m error → 12m threshold provides margin.
+**3. LiDAR coordinate frame**
+Multiple wrong sign combinations tried. Final correct transform derived from:
+  - Calibrated sensor quaternion → rotation matrix
+  - Empirical verification: `b.y=25.3` → 25m ahead confirmed ✅
+Fix: `ego_forward = -b.y, ego_left = b.x`
 
-### Class mismatch penalty: +5m
+**4. Double coordinate transform**
+fusion_node was applying a second transform on top of lidar_detection_node's
+already-transformed coordinates, giving 40–60m distances for nearby objects.
+Fix: fusion_node reads Detection3DArray position directly (already in ego frame).
 
-```
-Rationale: same-class objects should match preferentially,
-but cross-class matches are not forbidden (e.g. PointPillars
-predicts "truck", camera predicts "bus" for same object).
-
-+5m penalty: allows cross-class match if objects are very close
-             in BEV, but prefers same-class matches.
-```
-
-### Score weighting: 0.6 LiDAR / 0.4 Camera
-
-```
-LiDAR advantage: metric distance accuracy, not affected by lighting
-Camera advantage: class discrimination, texture features
-
-LiDAR weighted higher because:
-  - BEV position accuracy is primary for downstream planning
-  - Camera BEV projection has z=0 approximation error
-  - PointPillars trained on full nuScenes val (more data)
-```
+**5. Barrier noise**
+Camera detecting 5–15 barriers/frame, cluttering BEV and reducing match quality.
+Fix: barriers filtered from annotated image, Detection2DArray, and camera_markers.
 
 ---
 
-## Limitations
+## Colab vs ROS2 Fusion
 
-**Ground plane assumption (z=0):**
-Camera 2D boxes are projected to BEV assuming z=0 (flat road).
-This introduces error for:
-- Elevated objects (trucks, buses above road level)
-- Objects on slopes or ramps
-- Camera height variations
+Two implementations of late fusion exist in this project:
 
-**Single sweep LiDAR:**
-nuScenes Mini provides single-sweep point clouds (~35k points).
-Full nuScenes uses 10-sweep accumulation for denser coverage.
-Single sweep has gaps for distant or fast-moving objects.
-
-**Offline validation only:**
-Fusion validated on nuScenes sample data in Colab. Live fusion
-requires calibrated camera-LiDAR extrinsics for the specific
-sensor mounting configuration. The C++ port (`late_fusion.cpp`)
-and ROS2 bag replay are planned for integration phase.
-
-**Class vocabulary mismatch:**
-Camera model: 8 nuScenes classes (trained on Mini)
-PointPillars: 10 nuScenes classes (full val set)
-Classes not in camera vocabulary (trailer, construction_vehicle)
-appear as LiDAR-only detections.
+| | Colab | ROS2 |
+|---|---|---|
+| Location | `fusion/` notebooks | `ros2_ws/src/.../fusion_node.cpp` |
+| Data | nuScenes sample data | nuScenes bag replay |
+| Camera | mmdetection2d YOLO | YOLO26n TRT INT8 |
+| LiDAR | mmdetection3d PointPillars | CUDA-PointPillars FPN3 |
+| Matching | BEV distance + class penalty | BEV distance 8m |
+| Threshold | 12m | 8m |
+| Visualization | matplotlib | RViz2 MarkerArray |
+| Real-time | No | Yes (~2Hz bag rate) |
 
 ---
 
-## Files
+## Parameter Choices
 
-```
-fusion/
-  camera_to_bev.py       ← ground plane projection
-  late_fusion.py         ← matching + scoring logic
-  fusion_evaluation.py   ← evaluation on nuScenes samples
-  README.md              ← fusion module documentation
+**match_threshold = 8m:**
+Camera BEV projection error at 16m forward ≈ 4–8m lateral (ground plane approx).
+Threshold set to cover typical projection error without generating false positives.
+Class-agnostic matching used — camera class label applied to fused result.
 
-deployment/src/
-  late_fusion.cpp        ← C++ port (in progress)
-```
+**score weights = 0.6 LiDAR + 0.4 Camera:**
+LiDAR has accurate 3D position (metric space), camera has higher semantic confidence.
+Weights reflect LiDAR's superior localization while benefiting from camera's class labels.
+
+**sync_tolerance = 2.0s:**
+Bag produces perfectly synchronized timestamps (same nuScenes sample).
+Large tolerance is safe and avoids dropped frames from minor timing jitter.
+
+**score_threshold = 0.15 (LiDAR), 0.30 (Camera):**
+LiDAR threshold lower to increase recall for fusion matching.
+Camera threshold higher to reduce false-positive barriers/duplicates.

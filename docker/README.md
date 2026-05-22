@@ -5,7 +5,7 @@ Two containers, same base image (`l4t-jetpack:r36.4.0`), different purposes.
 | Container | Image | Size | TRT | Purpose |
 |---|---|---|---|---|
 | `edgedrive` | `Dockerfile` | ~10GB | 10.3.0 | Production C++ runtime |
-| `edgedrive-ros2` | `Dockerfile.ros2` | ~14GB | 10.3.0 | ROS2 + RViz2 + bag replay |
+| `edgedrive-ros2` | `Dockerfile.ros2` | ~14GB | 10.3.0 | ROS2 + CUDA-PointPillars + fusion |
 
 Both use `l4t-jetpack:r36.4.0` → same TRT 10.3.0 → same engines work in both.
 No engine rebuild needed when switching between containers.
@@ -114,9 +114,10 @@ ros2_entrypoint.sh
 Base   : nvcr.io/nvidia/l4t-jetpack:r36.4.0 (same as production)
 Adds   : ROS2 Humble Desktop, colcon, cv_bridge, vision_msgs,
          visualization_msgs, rosbag2, tf2_ros
-Binary : camera_node (compiled at build time via colcon)
+         libpointpillar_core.so (CUDA-PointPillars, pre-built on host)
+Binary : camera_node, lidar_detection_node, fusion_node (colcon at build time)
 Size   : ~14GB
-Status : ✅ tested — ~180 FPS on nuScenes 1600×900 via bag replay
+Status : camera_node ~180 FPS | lidar_detection_node ~37-45 FPS | fusion_node
 ```
 
 ### Why same base as production?
@@ -138,6 +139,12 @@ Our custom Dockerfile.ros2:
 ### Build
 
 ```bash
+# Build CUDA-PointPillars .so on host first
+cd ~/EdgeDrive-Perception/cuda-pointpillars/build
+export CUDASM=87
+make -j4
+
+# Build Docker image (copies .so + builds all 3 ROS2 nodes)
 cd ~/EdgeDrive-Perception
 docker build -t edgedrive-ros2:latest -f docker/Dockerfile.ros2 .
 ```
@@ -148,6 +155,10 @@ Cached rebuild: ~30s      (only recompiles when source changes)
   - Package manifests (package.xml, CMakeLists.txt) cached separately
   - Source changes only recompile the C++ node (~25s)
 ```
+
+> **Note:** `libpointpillar_core.so` is copied from the host at build time.
+> If you change `lidar-backbone.cu` or `pointpillar.cpp`, run `make -j4`
+> in `cuda-pointpillars/build` before rebuilding Docker.
 
 ### Verify
 
@@ -171,36 +182,47 @@ docker compose -f docker/docker-compose.ros2.yml run --rm camera-node
 docker compose -f docker/docker-compose.ros2.yml run --rm camera-node-bev
 ```
 
-### Run — nuScenes bag replay + RViz2
+### Run — full fusion demo (camera + LiDAR + fusion + RViz2)
 
 ```bash
-# Generate bags first (one time)
+# Generate bag first (one time)
 python3 scripts/nuscenes_to_ros2bag.py \
     --dataroot /data/sets/nuscenes \
     --output bags/nuscenes_scene0 --scene-idx 0
 
-# Headless pipeline (bag → TRT → /detections/camera)
+sudo nvpmodel -m 2    # 25W mode — required for dual TRT engines
 sudo jetson_clocks
-./scripts/run_ros2_bag_demo.sh
-
-# Full RViz2 demo (bag + camera_node + MarkerArray + RViz2 in one container)
 xhost +local:docker
 ./scripts/run_ros2_rviz_demo.sh
 ```
 
+Starts in a single container: TF publisher + bag replay + camera_node +
+lidar_detection_node + fusion_node + RViz2.
+
 RViz2 auto-loads `config/edgedrive.rviz`:
 ```
-Fixed Frame : base_link
-Displays    : MarkerArray (/detections/camera_markers)
-              Image       (/camera/annotated)
+Fixed Frame     : base_link
+Green cylinders : /detections/camera_markers   (camera BEV projection)
+Blue cylinders  : /detections/lidar_markers    (CUDA-PointPillars 3D)
+Red cylinders   : /visualization/fused         (matched detections)
+Image panel     : /camera/annotated            (annotated camera feed)
+Stats overlay   : live CAM / LiDAR / FUSED count per frame
+```
+
+### Run — headless (no RViz2)
+
+```bash
+# Headless pipeline (bag → TRT → /detections/camera)
+sudo jetson_clocks
+./scripts/run_ros2_bag_demo.sh
 ```
 
 ### Topics published by camera_node
 
 | Topic | Type | Description |
 |---|---|---|
-| `/detections/camera` | `vision_msgs/Detection2DArray` | 2D boxes + class + score |
-| `/camera/annotated` | `sensor_msgs/Image` | Annotated frame + FPS HUD |
+| `/detections/camera` | `vision_msgs/Detection2DArray` | 2D boxes + class + score (barriers excluded) |
+| `/camera/annotated` | `sensor_msgs/Image` | Annotated frame + FPS HUD (barriers excluded) |
 | `/camera/bev` | `sensor_msgs/Image` | BEV projection (if enabled) |
 | `/detections/camera_markers` | `visualization_msgs/MarkerArray` | Green 3D cylinders → RViz2 |
 
@@ -208,8 +230,15 @@ Displays    : MarkerArray (/detections/camera_markers)
 
 | Topic | Type | Description |
 |---|---|---|
-| `/detections/lidar` | `vision_msgs/Detection3DArray` | 3D boxes + class + score |
+| `/detections/lidar` | `vision_msgs/Detection3DArray` | 3D boxes in ego frame, 10 classes |
 | `/detections/lidar_markers` | `visualization_msgs/MarkerArray` | Blue 3D cylinders → RViz2 |
+
+### Topics published by fusion_node
+
+| Topic | Type | Description |
+|---|---|---|
+| `/detections/fused` | `vision_msgs/Detection3DArray` | Matched + unmatched LiDAR detections |
+| `/visualization/fused` | `visualization_msgs/MarkerArray` | Red=fused, Green=cam-only, Blue=lidar-only |
 
 ### QoS — important
 
@@ -220,24 +249,21 @@ Durability  : VOLATILE
 History     : KEEP_LAST (depth 10)
 ```
 
-Publishers must match all three explicitly. See `scripts/test_ros2_camera.sh`
-for a working Python publisher example.
-
 ### Key design notes
 
 **Binary lives inside the container:**
-The `camera_node` binary is compiled at `docker build` time and lives at
+The node binaries are compiled at `docker build` time and live at
 `/workspace/ros2_ws/install/`. Mounting `-v ~/EdgeDrive-Perception:/workspace`
 overwrites this — use compose services which mount only specific subdirectories.
 
 **DDS discovery between containers:**
 Even with `--network host`, DDS multicast sometimes fails between separate
-containers. Solution: run bag replay and camera_node in the same container
-(as in `run_ros2_bag_demo.sh` and `run_ros2_rviz_demo.sh`).
+containers. Solution: run bag replay and nodes in the same container
+(as in `run_ros2_rviz_demo.sh`).
 
 **colcon build output stays in container:**
 `ros2_ws/build/`, `ros2_ws/install/`, `ros2_ws/log/` are gitignored.
-The compiled binary is baked into the image — no host build artifacts needed.
+The compiled binaries are baked into the image — no host build artifacts needed.
 
 ### Compose services
 
@@ -247,7 +273,7 @@ The compiled binary is baked into the image — no host build artifacts needed.
 | `camera-node-bev` | camera_node + BEV on USB camera |
 | `camera-node-bag` | camera_node remapped to nuScenes bag topics |
 | `camera-launch` | camera_node via launch file |
-| `lidar-node` | lidar_detection_node (CUDA-PointPillars, requires setup_cuda_pointpillars.sh) |
+| `lidar-node` | lidar_detection_node (CUDA-PointPillars FPN3, 10 classes, ~37-45 FPS) |
 | `bag-replay` | ros2 bag play (loop) |
 | `rviz` | RViz2 only |
 | `dev` | Interactive shell for development |
@@ -313,6 +339,13 @@ devices:
   - /dev/nvhost-gpu:/dev/nvhost-gpu
 ```
 
+**Overcurrent / system crash with dual TRT engines**
+```bash
+sudo nvpmodel -m 2   # 25W mode before starting the fusion demo
+```
+Running camera_node (INT8) + lidar_detection_node (FP16) simultaneously
+in MAXN SUPER mode causes overcurrent. 15W or 25W mode is stable.
+
 **`TRT engine plan file not compatible`**
 Engine was built with different TRT version than container.
 Both containers use TRT 10.3.0 — engines built on host (JetPack R36.4.7)
@@ -331,5 +364,6 @@ the static TF publisher automatically.
 **Engine not found**
 Engines are not baked into the image — build on host first:
 ```bash
-./scripts/build_engine.sh int8
+./scripts/build_engine.sh int8                    # camera engine
+./scripts/setup_cuda_pointpillars.sh              # LiDAR engine
 ```

@@ -114,8 +114,8 @@ docker run --rm --runtime nvidia \
 
         if [ -f /workspace/cuda-pointpillars/model/pointpillar.plan ]; then
             ros2 run edgedrive_perception lidar_detection_node --ros-args \
-                -p engine_path:=/workspace/cuda-pointpillars/model/pointpillar.plan \
-                -p score_threshold:=$THRESH \
+                -p engine_path:=/workspace/cuda-pointpillars/model/pointpillar_fpn3.plan \
+                -p score_threshold:=0.2 \
                 -p publish_markers:=true &
             LIDAR_PID=\$!
         else
@@ -123,9 +123,20 @@ docker run --rm --runtime nvidia \
             LIDAR_PID=''
         fi
 
+        # Start fusion node with nuScenes CAM_FRONT intrinsics
+        ros2 run edgedrive_perception fusion_node --ros-args \
+            -p match_threshold:=5.0 \
+            -p sync_tolerance:=2.0 \
+            -p camera_fx:=1266.417 \
+            -p camera_fy:=1266.417 \
+            -p camera_cx:=816.267 \
+            -p camera_cy:=491.507 \
+            -p camera_height:=1.5 &
+        FUSION_PID=\$!
+
         echo '[5/5] Opening RViz2...'
         sleep 2
         rviz2 -d /workspace/ros2_ws/src/edgedrive_perception/config/edgedrive.rviz
 
-        kill \$CAM_PID \$LIDAR_PID \$BAG_PID \$TF_PID 2>/dev/null || true
+        kill \$CAM_PID \$LIDAR_PID \$FUSION_PID \$BAG_PID \$TF_PID 2>/dev/null || true
     "

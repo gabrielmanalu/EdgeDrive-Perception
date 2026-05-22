@@ -176,13 +176,11 @@ std::vector<BEVPoint> FusionNode::lidarDetsToBEV(const LidarMsg& msg)
     std::vector<BEVPoint> result;
     for (int i = 0; i < (int)msg.detections.size(); i++) {
         const auto& det = msg.detections[i];
-        float x_lid = det.bbox.center.position.x;
-        float y_lid = det.bbox.center.position.y;
 
-        // nuScenes LiDAR is mounted with X pointing BACKWARD
-        // Transform to ego frame: x_ego = -x_lid, y_ego = -y_lid
-        float x = -x_lid;  // forward in ego frame
-        float y = -y_lid;  // left in ego frame
+        // lidar_detection_node already converts to ego frame:
+        // position.x = ego forward, position.y = ego left
+        float x = det.bbox.center.position.x;
+        float y = det.bbox.center.position.y;
 
         float score = 0.0f;
         std::string cls;
@@ -213,11 +211,23 @@ std::vector<int> FusionNode::hungarianMatch(
 
     for (int i = 0; i < n_cam; i++) {
         for (int j = 0; j < n_lidar; j++) {
-            float dx = cam[i].x - lidar[j].x;
-            float dy = cam[i].y - lidar[j].y;
-            float d  = std::sqrt(dx*dx + dy*dy);
-            if (d <= match_threshold_)
-                cost[i][j] = d;
+            // Angular matching — compare bearing angle, not absolute BEV distance
+            // Monocular depth is unreliable; angle from camera is accurate
+            float cam_angle   = std::atan2(cam[i].y,   cam[i].x);
+            float lidar_angle = std::atan2(lidar[j].y, lidar[j].x);
+            float angle_diff  = std::abs(cam_angle - lidar_angle);
+            // Wrap to [-pi, pi]
+            if (angle_diff > M_PI) angle_diff = 2.0f * M_PI - angle_diff;
+
+            // Convert threshold from meters to radians at ~20m range
+            float angular_threshold = std::atan2(match_threshold_, 20.0f);
+            if (angle_diff <= angular_threshold) {
+                // Weight by BEV distance but allow angular matches
+                float dx = cam[i].x - lidar[j].x;
+                float dy = cam[i].y - lidar[j].y;
+                float d  = std::sqrt(dx*dx + dy*dy);
+                cost[i][j] = angle_diff * 20.0f;  // normalize to meters-equivalent
+            }
         }
     }
 

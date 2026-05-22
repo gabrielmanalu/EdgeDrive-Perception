@@ -30,11 +30,20 @@
 
 namespace edgedrive {
 
-// nuScenes class names (10 classes, index matches anchor order)
+// nuScenes class names — actual mmdetection3d ordering
+// Verified against inference_detector output:
+// cls=0→car, cls=7→pedestrian
 static const std::vector<std::string> NUSCENES_CLASSES = {
-    "car", "truck", "bus", "trailer",
-    "construction_vehicle", "pedestrian",
-    "motorcycle", "bicycle", "traffic_cone", "barrier"
+    "car",                  // 0
+    "truck",                // 1
+    "construction_vehicle", // 2
+    "bus",                  // 3
+    "trailer",              // 4
+    "barrier",              // 5
+    "motorcycle",           // 6
+    "pedestrian",           // 7  ← confirmed from Colab inference
+    "bicycle",              // 8
+    "traffic_cone"          // 9
 };
 
 // Blue cylinder color for LiDAR detections in RViz2
@@ -48,7 +57,7 @@ LidarDetectionNode::LidarDetectionNode(const rclcpp::NodeOptions& options)
 {
     // Parameters
     engine_path_      = declare_parameter("engine_path",
-        "/workspace/cuda-pointpillars/model/pointpillar.plan");
+        "/workspace/cuda-pointpillars/model/pointpillar_fpn3.plan");
     score_threshold_  = declare_parameter("score_threshold", 0.15f);
     publish_markers_  = declare_parameter("publish_markers", true);
 
@@ -176,9 +185,10 @@ void LidarDetectionNode::lidarCallback(
     for (const auto& b : filtered) {
         vision_msgs::msg::Detection3D det;
         det.header = det_msg.header;
-        det.bbox.center.position.x = b.x;
-        det.bbox.center.position.y = b.y;
-        det.bbox.center.position.z = b.z;
+        // nuScenes LiDAR→ego: ego_forward = +LiDAR_Y, ego_left = -LiDAR_X
+        det.bbox.center.position.x =  b.y;  // ego forward
+        det.bbox.center.position.y = -b.x;  // ego left
+        det.bbox.center.position.z =  b.z;
         det.bbox.size.x = b.w;
         det.bbox.size.y = b.l;
         det.bbox.size.z = b.h;
@@ -230,8 +240,10 @@ void LidarDetectionNode::publishMarkers(
         cyl.type      = visualization_msgs::msg::Marker::CYLINDER;
         cyl.action    = visualization_msgs::msg::Marker::ADD;
 
-        cyl.pose.position.x  = b.x;
-        cyl.pose.position.y  = b.y;
+        // nuScenes LiDAR: +X=ego_right, +Y=ego_forward
+        // ego_forward = lidar_Y, ego_left = -lidar_X
+        cyl.pose.position.x  =  b.y;  // ego forward = +LiDAR_Y
+        cyl.pose.position.y  = -b.x;  // ego left = -LiDAR_X
         cyl.pose.position.z  = 0.0;
         cyl.pose.orientation.w = 1.0;
 
@@ -254,8 +266,8 @@ void LidarDetectionNode::publishMarkers(
         txt.type      = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
         txt.action    = visualization_msgs::msg::Marker::ADD;
 
-        txt.pose.position.x = b.x;
-        txt.pose.position.y = b.y;
+        txt.pose.position.x =  b.y;
+        txt.pose.position.y = -b.x;
         txt.pose.position.z = cyl.scale.z + 0.3f;
         txt.pose.orientation.w = 1.0;
         txt.scale.z = 0.4f;

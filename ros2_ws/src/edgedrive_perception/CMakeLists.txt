@@ -86,12 +86,35 @@ ament_target_dependencies(camera_node
     tf2_ros
 )
 
-# ── fusion_node (placeholder) ──────────────
-# add_executable(fusion_node
-#     src/fusion_node.cpp
-#     ${SHARED_SOURCES}
-# )
-# ament_target_dependencies(fusion_node ...)
+# ── fusion_node ───────────────────────────────────────────────────────────────
+add_executable(fusion_node
+    src/fusion_node.cpp
+)
+
+target_include_directories(fusion_node PRIVATE
+    include
+    ${TENSORRT_INCLUDE_DIR}
+    ${CUDA_INCLUDE_DIRS}
+)
+
+target_link_libraries(fusion_node
+    pthread
+    -Wl,--allow-shlib-undefined
+)
+
+ament_target_dependencies(fusion_node
+    rclcpp
+    sensor_msgs
+    std_msgs
+    vision_msgs
+    visualization_msgs
+    tf2_ros
+    message_filters
+)
+
+install(TARGETS fusion_node
+    DESTINATION lib/${PROJECT_NAME}
+)
 
 # ── lidar_detection_node ──────────────────────────────────────────────────────
 # Links against CUDA-PointPillars shared library (libpointpillar_core.so)

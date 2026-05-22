@@ -27,9 +27,8 @@
   <!-- Image transport + CV bridge -->
   <depend>image_transport</depend>
   <depend>cv_bridge</depend>
-
-  <!-- Camera-LiDAR sync -->
-  <depend>message_filters</depend>
+  <build_depend>message_filters</build_depend>
+  <exec_depend>message_filters</exec_depend>
 
   <!-- TF2 for transforms -->
   <depend>tf2_ros</depend>

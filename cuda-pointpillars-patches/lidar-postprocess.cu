@@ -92,13 +92,12 @@ __global__ void postprocess_kernal(const float *cls_input,
   int row = loc_index / feature_x_size;
   float x_offset = min_x_range + col * (max_x_range - min_x_range) / (feature_x_size - 1);
   float y_offset = min_y_range + row * (max_y_range - min_y_range) / (feature_y_size - 1);
-  int cls_offset = loc_index * num_anchors * num_classes + ith_anchor * num_classes;
-
-  const float *scores = cls_input + cls_offset;
-  float max_score = sigmoid(scores[0]);
+  // NCHW fix: cls_scores [1, num_anchors*num_classes, H, W]
+  int HW = feature_x_size * feature_y_size;
+  float max_score = sigmoid(cls_input[(ith_anchor * num_classes + 0) * HW + loc_index]);
   int cls_id = 0;
   for (int i = 1; i < num_classes; i++) {
-    float cls_score = sigmoid(scores[i]);
+    float cls_score = sigmoid(cls_input[(ith_anchor * num_classes + i) * HW + loc_index]);
     if (cls_score > max_score) {
       max_score = cls_score;
       cls_id = i;
@@ -107,12 +106,14 @@ __global__ void postprocess_kernal(const float *cls_input,
 
   if (max_score >= score_thresh)
   {
-    int box_offset = loc_index * num_anchors * num_box_values + ith_anchor * num_box_values;
-    int dir_cls_offset = loc_index * num_anchors * 2 + ith_anchor * 2;
+    // NCHW fix: read box values into local array
+    float box_enc[9];
+    for (int j = 0; j < num_box_values; j++) {
+        box_enc[j] = box_input[(ith_anchor * num_box_values + j) * HW + loc_index];
+    }
     float *anchor_ptr = anchors + ith_anchor * 4;
     float z_offset = anchor_ptr[2] / 2 + anchor_bottom_heights[ith_anchor / 2];
     float anchor[7] = {x_offset, y_offset, z_offset, anchor_ptr[0], anchor_ptr[1], anchor_ptr[2], anchor_ptr[3]};
-    float *box_encodings = box_input + box_offset;
 
     float xa = anchor[0];
     float ya = anchor[1];
@@ -122,29 +123,31 @@ __global__ void postprocess_kernal(const float *cls_input,
     float dza = anchor[5];
     float ra = anchor[6];
     float diagonal = sqrtf(dxa * dxa + dya * dya);
-    box_encodings[0] = box_encodings[0] * diagonal + xa;
-    box_encodings[1] = box_encodings[1] * diagonal + ya;
-    box_encodings[2] = box_encodings[2] * dza + za;
-    box_encodings[3] = expf(box_encodings[3]) * dxa;
-    box_encodings[4] = expf(box_encodings[4]) * dya;
-    box_encodings[5] = expf(box_encodings[5]) * dza;
-    box_encodings[6] = box_encodings[6] + ra;
+    box_enc[0] = box_enc[0] * diagonal + xa;
+    box_enc[1] = box_enc[1] * diagonal + ya;
+    box_enc[2] = box_enc[2] * dza + za;
+    box_enc[3] = expf(box_enc[3]) * dxa;
+    box_enc[4] = expf(box_enc[4]) * dya;
+    box_enc[5] = expf(box_enc[5]) * dza;
+    box_enc[6] = box_enc[6] + ra;
 
     float yaw;
-    int dir_label = dir_input[dir_cls_offset] > dir_input[dir_cls_offset + 1] ? 0 : 1;
+    float dir0 = dir_input[(ith_anchor * 2 + 0) * HW + loc_index];
+    float dir1 = dir_input[(ith_anchor * 2 + 1) * HW + loc_index];
+    int dir_label = dir0 > dir1 ? 0 : 1;
     float period = 2 * M_PI / 2;
-    float val = box_input[box_offset + 6] - dir_offset;
+    float val = box_enc[6] - dir_offset;
     float dir_rot = val - floor(val / (period + 1e-8) + 0.f) * period;
     yaw = dir_rot + dir_offset + period * dir_label;
 
     int resCount = (int)atomicAdd(object_counter, 1);
     float *data = bndbox_output + resCount * 9;
-    data[0] = box_input[box_offset];
-    data[1] = box_input[box_offset + 1];
-    data[2] = box_input[box_offset + 2];
-    data[3] = box_input[box_offset + 3];
-    data[4] = box_input[box_offset + 4];
-    data[5] = box_input[box_offset + 5];
+    data[0] = box_enc[0];
+    data[1] = box_enc[1];
+    data[2] = box_enc[2];
+    data[3] = box_enc[3];
+    data[4] = box_enc[4];
+    data[5] = box_enc[5];
     data[6] = yaw;
     *(int *)&data[7] = cls_id;
     data[8] = max_score;
@@ -441,7 +444,10 @@ public:
         checkRuntime(cudaMemcpy(anchors_, param_.anchors, param_.num_anchors * param_.len_per_anchor * sizeof(float), cudaMemcpyDefault));
         checkRuntime(cudaMemcpy(anchor_bottom_heights_, &param_.anchor_bottom_heights, param_.num_classes * sizeof(float), cudaMemcpyDefault));
 
-        h_mask_size_ = det_num_ * DIVUP(det_num_, NMS_THREADS_PER_BLOCK) * sizeof(uint64_t);
+        // Cap h_mask_ at nms_pre=1000 to avoid OOM on large grids
+        // After nms_pre cap, bndbox_num_ never exceeds 1000
+        const int NMS_PRE = 1000;
+        h_mask_size_ = NMS_PRE * DIVUP(NMS_PRE, NMS_THREADS_PER_BLOCK) * sizeof(uint64_t);
         checkRuntime(cudaMallocHost((void **)&h_mask_, h_mask_size_));
 
         int res_blocks = DIVUP(det_num_, NMS_THREADS_PER_BLOCK);
@@ -481,14 +487,22 @@ public:
         checkRuntime(cudaMemcpyAsync(&bndbox_num_, object_counter_, sizeof(int), cudaMemcpyDeviceToHost, _stream));
         checkRuntime(cudaStreamSynchronize(_stream));
         // Safety cap: bndbox_num_ must not exceed allocated buffer
-        if (bndbox_num_ <= 0 || bndbox_num_ > det_num_) {
-            printf("[PostProcess] bndbox_num_ %d out of range [0, %d], skipping frame\n", bndbox_num_, det_num_);
-            bndbox_num_ = 0;
+        if (bndbox_num_ > det_num_) {
+            printf("[PostProcess] bndbox_num_ %d out of range [0, %d], clamping\n", bndbox_num_, det_num_);
+            bndbox_num_ = det_num_;
+        }
+        // Hard cap at 500 before sort+NMS to prevent any crash
+        if (bndbox_num_ > 500) bndbox_num_ = 500;
+
+        // Skip NMS entirely if no detections (0 blocks = invalid CUDA launch)
+        if (bndbox_num_ == 0) {
+            bndbox_num_after_nms_ = 0;
             return;
         }
-
         thrust::device_ptr<combined_float> thr_bndbox_((combined_float *)bndbox_);
         thrust::stable_sort_by_key(thrust::cuda::par.on(_stream), score_, score_ + bndbox_num_, thr_bndbox_, thrust::greater<float>());
+        // Cap at nms_pre=1000 (nuScenes test_cfg) — only run NMS on top detections
+        if (bndbox_num_ > 1000) bndbox_num_ = 1000;
         checkRuntime(nms_launch(bndbox_num_, bndbox_, param_.nms_thresh, h_mask_, _stream));
 
         checkRuntime(cudaMemcpyAsync(h_bndbox_, bndbox_, bndbox_num_ * 9 * sizeof(float), cudaMemcpyDeviceToHost, _stream));

@@ -1,40 +1,39 @@
 /*
- * main.cpp — EdgeDrive Perception: CUDA-PointPillars nuScenes Configuration
- * ==========================================================================
+ * main.cpp — EdgeDrive Perception: nuScenes PointPillars Configuration
+ * =====================================================================
  *
- * Patched from NVIDIA-AI-IOT/CUDA-PointPillars for:
- *   - Jetson Orin Nano Super (SM87, JetPack R36.4.7)
- *   - nuScenes dataset (mmdetection3d PointPillars model)
+ * Patched from NVIDIA-AI-IOT/CUDA-PointPillars for nuScenes dataset.
  *
- * Key changes from original KITTI version:
+ * Key changes from KITTI defaults:
  *
  *   VOXELIZATION:
- *     KITTI : range [0,-40,-3, 70.4,40,1], voxel [0.16,0.16,4.0], 4 features
- *     Ours  : range [-50,-50,-5, 50,50,3], voxel [0.25,0.25,8.0], 4 features
- *             (nuScenes LiDAR has 5 channels: x,y,z,intensity,ring —
- *              ring channel is dropped, only 4 used to match model input)
- *
- *   POSTPROCESS:
- *     KITTI : 3 classes (Car, Ped, Cyclist), 6 anchors, bbox_code=7
- *     Ours  : 10 classes (nuScenes), 8 anchors (4 sizes × 2 rotations),
- *             bbox_code=9 (DeltaXYZWLHRBBoxCoder), score_thresh=0.05
+ *     KITTI : range [0,-40,-3, 70.4,40,1], voxel [0.16,0.16,4.0]
+ *     Ours  : range [-50,-50,-5, 50,50,3], voxel [0.25,0.25,8.0]
+ *             (nuScenes full 100m × 100m coverage at 0.25m resolution)
+ *     Note  : nuScenes LiDAR has 5 fields (x,y,z,intensity,ring)
+ *             but num_feature=4 — ring channel stripped in lidar_detection_node
  *
  *   ENGINE:
- *     KITTI : TRT engine contains VFE + PPScatterPlugin + Backbone (6 bindings)
- *     Ours  : TRT engine contains Backbone+Neck+Head only (4 bindings)
- *             CHW scatter runs as standalone CUDA kernel in lidar-backbone.cu
+ *     KITTI : ../model/pointpillar.plan  (KITTI-trained, 6 bindings)
+ *     Ours  : ../model/pointpillar_fpn3.plan (nuScenes FPN3, 10 bindings)
+ *             Built from pointpillars_nuscenes_fpn3.onnx (mmdetection3d export)
  *
- * Model:
+ *   POSTPROCESS:
+ *     KITTI : 3 classes, 6 anchors, bbox_code=7, feature_size from KITTI grid
+ *     Ours  : 10 classes, 8 anchors, bbox_code=9, feature_size 200×200 (level 0)
+ *             Levels 1 (100×100) and 2 (50×50) handled by make_level_param()
+ *             in pointpillar.cpp which scales anchor sizes per FPN level
+ *
+ * ONNX export:
  *   Config     : pointpillars_hv_fpn_sbn-all_8xb4-2x_nus-3d.py (mmdetection3d)
  *   Checkpoint : pointpillars_nuscenes.pth
- *   ONNX       : pointpillars_nuscenes_backbone.onnx (18.9MB, backbone+neck+head)
- *   Engine     : model/pointpillar.plan (built with trtexec --fp16)
+ *   ONNX       : pointpillars_nuscenes_fpn3.onnx (all 3 FPN levels, 9 outputs)
+ *   Engine     : pointpillar_fpn3.plan (TRT FP16, SM87)
  *
- * Performance (no jetson_clocks):
- *   Voxelization : ~0.2ms
- *   Backbone+Head: ~12-15ms
- *   Decoder+NMS  : ~6-11ms
- *   Total        : ~18-25ms (~50 FPS)
+ * Performance (Jetson Orin Nano Super, 25W, nuScenes data 43K pts):
+ *   Warm inference : ~39ms total (~25 FPS)
+ *   Cold start     : ~75ms (first frame TRT warmup)
+ *   Detections     : 140-155 per frame (10 classes detected)
  */
 
 #include <cuda_runtime.h>
@@ -197,7 +196,7 @@ std::shared_ptr<pointpillar::lidar::Core> create_core() {
 
     pointpillar::lidar::CoreParameter param;
     param.voxelization = vp;
-    param.lidar_model = "../model/pointpillar.plan";
+    param.lidar_model = "../model/pointpillar_fpn3.plan";
     param.lidar_post = pp;
     return pointpillar::lidar::create_core(param);
 }

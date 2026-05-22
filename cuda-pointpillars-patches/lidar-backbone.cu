@@ -1,42 +1,29 @@
 /*
- * lidar-backbone.cu — EdgeDrive Perception: nuScenes Backbone with CHW Scatter
- * ==============================================================================
+ * lidar-backbone.cu — EdgeDrive Perception: 3-Level FPN Backbone
+ * ===============================================================
  *
- * Patched from NVIDIA-AI-IOT/CUDA-PointPillars for our split-pipeline approach.
+ * Updated from single-level to 3-level FPN for full nuScenes detection.
  *
- * Key architectural change:
+ * ONNX: pointpillars_nuscenes_fpn3.onnx (exported with all 3 FPN levels)
  *
- *   ORIGINAL (KITTI):
- *     TRT engine contains VFE + PPScatterPlugin + SECOND + FPN + Head (6 bindings)
- *     forward() passes: {voxels, coords, params, cls, box, dir}
- *     Scatter from HWC8 → 2D BEV grid happens INSIDE TRT via custom plugin
- *
- *   OURS (nuScenes):
- *     TRT engine contains SECOND + FPN + Anchor3DHead only (4 bindings)
- *     forward() passes: {pseudo_image, cls, box, dir}
- *     Scatter happens OUTSIDE TRT via pillarScatterCHW_kernel (this file)
- *     VFE still runs in lidar-voxelization.cu as before
- *
- * Why the split?
- *   Our model was exported from mmdetection3d (MVXFasterRCNN) as backbone+neck+head
- *   only. The HardVFE and PointPillarsScatter are not part of the exported ONNX.
- *   Rather than re-export with a custom PPScatterPlugin, we implement the scatter
- *   as a lightweight CUDA kernel that outputs CHW format directly.
- *
- * pillarScatterCHW_kernel:
- *   Converts sparse pillar features [N, 64] → dense pseudo-image [1, 64, 400, 400]
- *   Output format: standard PyTorch CHW (channel-first), float32
- *   Input format:  pillar features in half precision from lidar-voxelization.cu
- *
- *   Grid params (nuScenes):
- *     GRID_X = GRID_Y = 400  (point_cloud_range ±50m / voxel_size 0.25m)
- *     PP_FEATURES = 64       (HardVFE output channels)
- *
- * TRT engine bindings (4 tensors):
+ * TRT engine bindings (10 tensors):
  *   [0] pseudo_image : input  [1, 64, 400, 400] float32
- *   [1] cls_scores   : output [1, 80, 200, 200] float32  (10 classes × 8 anchors)
- *   [2] bbox_preds   : output [1, 72, 200, 200] float32  (9 values   × 8 anchors)
- *   [3] dir_preds    : output [1, 16, 200, 200] float32  (2 dirs     × 8 anchors)
+ *   [1] cls_l0       : output [1, 80, 200, 200] float32  small objects (ped/bike)
+ *   [2] box_l0       : output [1, 72, 200, 200] float32
+ *   [3] dir_l0       : output [1, 16, 200, 200] float32
+ *   [4] cls_l1       : output [1, 80, 100, 100] float32  medium objects (car)
+ *   [5] box_l1       : output [1, 72, 100, 100] float32
+ *   [6] dir_l1       : output [1, 16, 100, 100] float32
+ *   [7] cls_l2       : output [1, 80,  50,  50] float32  large objects (truck/bus)
+ *   [8] box_l2       : output [1, 72,  50,  50] float32
+ *   [9] dir_l2       : output [1, 16,  50,  50] float32
+ *
+ * Anchor scales per level (AlignedAnchor3DRangeGenerator scales=[1,2,4]):
+ *   Level 0 (scale=1): anchors × 1.0  [2.60, 1.73, 1.00, 0.40]
+ *   Level 1 (scale=2): anchors × 2.0  [5.20, 3.46, 2.00, 0.80]
+ *   Level 2 (scale=4): anchors × 4.0  [10.40, 6.93, 4.00, 1.60]
+ *
+ * CHW scatter kernel unchanged — produces [1, 64, 400, 400] pseudo-image.
  */
 
 #include <cuda_fp16.h>
@@ -86,41 +73,62 @@ class BackboneImplement : public Backbone {
 public:
     virtual ~BackboneImplement() {
         if (pseudo_image_) checkRuntime(cudaFree(pseudo_image_));
-        if (cls_)          checkRuntime(cudaFree(cls_));
-        if (box_)          checkRuntime(cudaFree(box_));
-        if (dir_)          checkRuntime(cudaFree(dir_));
+        for (int i = 0; i < 3; i++) {
+            if (cls_[i]) checkRuntime(cudaFree(cls_[i]));
+            if (box_[i]) checkRuntime(cudaFree(box_[i]));
+            if (dir_[i]) checkRuntime(cudaFree(dir_[i]));
+        }
     }
 
     bool init(const std::string& model) {
         engine_ = TensorRT::load(model);
         if (engine_ == nullptr) return false;
 
-        // Our engine: [0]=pseudo_image, [1]=cls, [2]=box, [3]=dir
-        cls_dims_ = engine_->static_dims(1);
-        box_dims_ = engine_->static_dims(2);
-        dir_dims_ = engine_->static_dims(3);
+        // Verify binding count
+        // Single-level: 4 bindings  (legacy)
+        // Three-level:  10 bindings (new)
+        int nb = engine_->num_bindings();
+        is_fpn3_ = (nb >= 10);
 
-        // Allocate pseudo-image [1, 64, 400, 400]
+        printf("[Backbone] %s mode (%d bindings)\n",
+               is_fpn3_ ? "FPN3" : "SingleLevel", nb);
+
+        // Allocate pseudo-image
         checkRuntime(cudaMalloc(&pseudo_image_,
             sizeof(float) * PP_FEATURES * GRID_Y * GRID_X));
 
-        int32_t vol;
-        vol = std::accumulate(cls_dims_.begin(), cls_dims_.end(), 1,
-                              std::multiplies<int32_t>());
-        checkRuntime(cudaMalloc(&cls_, vol * sizeof(float)));
-
-        vol = std::accumulate(box_dims_.begin(), box_dims_.end(), 1,
-                              std::multiplies<int32_t>());
-        checkRuntime(cudaMalloc(&box_, vol * sizeof(float)));
-
-        vol = std::accumulate(dir_dims_.begin(), dir_dims_.end(), 1,
-                              std::multiplies<int32_t>());
-        checkRuntime(cudaMalloc(&dir_, vol * sizeof(float)));
-
+        if (is_fpn3_) {
+            // 3-level: bindings 1-3, 4-6, 7-9
+            for (int lvl = 0; lvl < 3; lvl++) {
+                cls_dims_[lvl] = engine_->static_dims(1 + lvl * 3);
+                box_dims_[lvl] = engine_->static_dims(2 + lvl * 3);
+                dir_dims_[lvl] = engine_->static_dims(3 + lvl * 3);
+                alloc_buf(cls_[lvl], cls_dims_[lvl]);
+                alloc_buf(box_[lvl], box_dims_[lvl]);
+                alloc_buf(dir_[lvl], dir_dims_[lvl]);
+            }
+        } else {
+            // Single-level fallback
+            cls_dims_[0] = engine_->static_dims(1);
+            box_dims_[0] = engine_->static_dims(2);
+            dir_dims_[0] = engine_->static_dims(3);
+            alloc_buf(cls_[0], cls_dims_[0]);
+            alloc_buf(box_[0], box_dims_[0]);
+            alloc_buf(dir_[0], dir_dims_[0]);
+        }
         return true;
     }
 
-    virtual void print() override { engine_->print("Lidar Backbone (nuScenes)"); }
+    void alloc_buf(float*& ptr, const std::vector<int>& dims) {
+        int32_t vol = std::accumulate(dims.begin(), dims.end(), 1,
+                                      std::multiplies<int32_t>());
+        checkRuntime(cudaMalloc(&ptr, vol * sizeof(float)));
+    }
+
+    virtual void print() override {
+        engine_->print(is_fpn3_ ? "Lidar Backbone FPN3 (nuScenes)"
+                                 : "Lidar Backbone Single (nuScenes)");
+    }
 
     virtual void forward(const nvtype::half* voxels,
                          const unsigned int* voxel_idxs,
@@ -129,12 +137,10 @@ public:
     {
         cudaStream_t _stream = reinterpret_cast<cudaStream_t>(stream);
 
-        // Step 1: Scatter pillar features → pseudo-image [1, 64, 400, 400] CHW
-        // Zero pseudo-image (sparse scatter — empty pillars stay 0)
+        // Step 1: CHW Scatter → pseudo-image
         checkRuntime(cudaMemsetAsync(pseudo_image_, 0,
             sizeof(float) * PP_FEATURES * GRID_Y * GRID_X, _stream));
 
-        // Get num_pillars from device params
         unsigned int num_pillars = 0;
         checkRuntime(cudaMemcpyAsync(&num_pillars, params,
             sizeof(unsigned int), cudaMemcpyDeviceToHost, _stream));
@@ -148,25 +154,46 @@ public:
                 GRID_X, GRID_Y, pseudo_image_);
         }
 
-        // Step 2: Run backbone TRT engine
-        // Inputs:  [pseudo_image]
-        // Outputs: [cls_, box_, dir_]
-        engine_->forward(
-            {pseudo_image_, cls_, box_, dir_},
-            static_cast<cudaStream_t>(_stream));
+        // Step 2: TRT forward
+        if (is_fpn3_) {
+            engine_->forward(
+                {pseudo_image_,
+                 cls_[0], box_[0], dir_[0],
+                 cls_[1], box_[1], dir_[1],
+                 cls_[2], box_[2], dir_[2]},
+                static_cast<cudaStream_t>(_stream));
+        } else {
+            engine_->forward(
+                {pseudo_image_, cls_[0], box_[0], dir_[0]},
+                static_cast<cudaStream_t>(_stream));
+        }
     }
 
-    virtual float* cls() override { return cls_; }
-    virtual float* box() override { return box_; }
-    virtual float* dir() override { return dir_; }
+    // Level 0 accessors (required by Backbone interface)
+    virtual float* cls() override { return cls_[0]; }
+    virtual float* box() override { return box_[0]; }
+    virtual float* dir() override { return dir_[0]; }
+
+    // Level 1 accessors
+    virtual float* cls1() override { return cls_[1]; }
+    virtual float* box1() override { return box_[1]; }
+    virtual float* dir1() override { return dir_[1]; }
+
+    // Level 2 accessors
+    virtual float* cls2() override { return cls_[2]; }
+    virtual float* box2() override { return box_[2]; }
+    virtual float* dir2() override { return dir_[2]; }
+
+    virtual bool is_fpn3() const override { return is_fpn3_; }
 
 private:
     std::shared_ptr<TensorRT::Engine> engine_;
     float* pseudo_image_ = nullptr;
-    float* cls_          = nullptr;
-    float* box_          = nullptr;
-    float* dir_          = nullptr;
-    std::vector<int> cls_dims_, box_dims_, dir_dims_;
+    float* cls_[3] = {nullptr, nullptr, nullptr};
+    float* box_[3] = {nullptr, nullptr, nullptr};
+    float* dir_[3] = {nullptr, nullptr, nullptr};
+    std::vector<int> cls_dims_[3], box_dims_[3], dir_dims_[3];
+    bool is_fpn3_ = false;
 };
 
 std::shared_ptr<Backbone> create_backbone(const std::string& model) {

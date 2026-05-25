@@ -687,7 +687,7 @@ See [`cuda-pointpillars-patches/README.md`](cuda-pointpillars-patches/README.md)
 
 Model weights are not stored in this repository.
 
-**Download from Google Drive:** *(link to be added)*
+**Download from Google Drive:** *[`link`](https://drive.google.com/drive/folders/1e8lLJFoN3HOKB0HIsvc6w_RRpekOgi-n?usp=sharing)*
 
 Or reproduce by running the training scripts above.
 Training time: ~70 min per model on Tesla T4 (Google Colab).

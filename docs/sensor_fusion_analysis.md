@@ -93,12 +93,14 @@ Rotation matrix:
   LiDAR +Y → ego: (1.0,   0.002, 0.0)  ← ego FORWARD
 
 Transform applied in lidar_detection_node:
-  ego_forward = -b.y
-  ego_left    = +b.x
+  ego_forward = b.y
+  ego_left    = -b.x
 ```
 
 This was verified empirically: raw LiDAR output `b.y=25.3` for a car 25m ahead
 confirms LiDAR +Y = ego forward.
+
+`Detection3DArray`is the canonical LiDAR output used by fusion and is transformed into base_link as x = b.y, y = -b.x. The standalone `LiDAR MarkerArray` publisher is a debug visualization of raw PointPillars output and is not consumed by fusion.
 
 ---
 
@@ -140,7 +142,7 @@ Fix: updated `NUSCENES_CLASSES[]` array ordering in lidar_detection_node.
 Multiple wrong sign combinations tried. Final correct transform derived from:
   - Calibrated sensor quaternion → rotation matrix
   - Empirical verification: `b.y=25.3` → 25m ahead confirmed ✅
-Fix: `ego_forward = -b.y, ego_left = b.x`
+Fix: `ego_forward = b.y, ego_left = -b.x`
 
 **4. Double coordinate transform**
 fusion_node was applying a second transform on top of lidar_detection_node's

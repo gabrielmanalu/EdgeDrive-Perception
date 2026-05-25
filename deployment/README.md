@@ -47,9 +47,7 @@ deployment/
     ├── object_counter.cpp       ← centroid tracker, line crossing
     ├── speed_estimator.cpp      ← displacement → m/s → km/h, trail
     ├── segmentation_decoder.cpp ← mask coefficients × prototypes
-    ├── preprocessor.cu          ← CUDA letterbox + BGR→RGB + CHW
-    ├── late_fusion.cpp          ← camera-LiDAR BEV matching (⬜ WIP)
-    └── pointpillars_decoder.cpp ← LiDAR 3D box decoder (⬜ WIP)
+    └── preprocessor.cu          ← CUDA letterbox + BGR→RGB + CHW
 ```
 
 

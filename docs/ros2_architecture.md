@@ -166,22 +166,30 @@ ros2 bag play bags/nuscenes_scene0
 
 ---
 
-## LiDAR Coordinate Transform
+## LiDAR Coordinate Transform (nuScenes to Ego)
 
-nuScenes LIDAR_TOP is not axis-aligned with the ego vehicle frame.
-Transform derived from `calibrated_sensor` quaternion:
+The nuScenes `LIDAR_TOP` sensor is not natively axis-aligned with the standard ROS2 `ego_vehicle` / `base_link` frame. To correctly fuse LiDAR detections with camera data, a spatial transformation is derived directly from the nuScenes `calibrated_sensor` JSON payload.
 
+**Raw Calibration Data:**
+```yaml
+translation: [0.943713, 0.0, 1.84023]        # 1.84m above ground, 0.94m forward
+quaternion:  [0.7077955, -0.006492, 0.010646, -0.7063073] # [w, x, y, z]
 ```
-Quaternion: [0.7077955, -0.006492, 0.010646, -0.7063073]
-→ LiDAR +X maps to ego RIGHT
-→ LiDAR +Y maps to ego FORWARD
 
-Applied in lidar_detection_node:
-  det.bbox.center.position.x = -b.y   ← ego forward
-  det.bbox.center.position.y =  b.x   ← ego left
+**Derived Rotation Matrix Mapping:**
+Decoding the quaternion reveals a ~90-degree yaw rotation relative to the ego vehicle:
+*   **LiDAR +X** maps to **Ego RIGHT**   `( 0.002, -1.000, 0.000)`
+*   **LiDAR +Y** maps to **Ego FORWARD** `( 1.000,  0.002, 0.000)`
 
-Verified: raw output b.y=25.3 → car 25m ahead confirmed
+**Pipeline Implementation (`lidar_detection_node.cpp`):**
+To align the network output with the standard ROS2 coordinate system (X=Forward, Y=Left), the transform is applied to the bounding box outputs post-inference:
+```cpp
+// nuScenes LiDAR→ego: ego_forward = +LiDAR_Y, ego_left = -LiDAR_X
+det.bbox.center.position.x =  b.y;  // ego forward
+det.bbox.center.position.y = -b.x;  // ego left
 ```
+
+*Empirical Verification: Raw LiDAR inference tested on a vehicle physically located 25m directly ahead output `b.y = 25.3`, successfully confirming the `+Y = Forward` mathematical derivation.*
 
 ---
 

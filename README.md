@@ -1,135 +1,77 @@
 # EdgeDrive Perception
 
-Edge AI perception pipeline for real-time autonomous driving on Jetson Orin Nano Super.
+**Real-time camera + LiDAR 3D perception — deployed and fused live on a ~$260 Jetson Orin Nano Super.**
 
-Covers the full pipeline from dataset preparation to edge deployment:
-camera detection, LiDAR 3D detection, sensor fusion, quantization,
-TensorRT C++ deployment, and **Docker containerization**.
+Two detectors run concurrently in hand-written C++/TensorRT — **YOLO26n** (2D, INT8) and **CUDA-PointPillars FPN3** (3D LiDAR, FP16) — time-synced and **fused in BEV**, wrapped as a **ROS2 Humble** pipeline, and shipped in **Docker**. The hard part was porting NVIDIA's CUDA-PointPillars across a **full JetPack 5→6 / TensorRT 8→10 / KITTI→nuScenes generation gap** and making two TensorRT engines co-exist inside a 15–25 W envelope. Every latency and power figure below is **measured on-device** (`sudo jetson_clocks`).
 
-Designed for low-cost edge hardware (~$260), achieving **202 FPS at 8.9W**
-in live camera deployment — under 10W at real-world 30 FPS workload.
-Peak stress-test throughput: 193 FPS at 12.2W (15.8 FPS/W).
+📹 [Camera demo](https://youtu.be/zx4OrOlAXBs) · [Video demo](https://youtu.be/UsOV8r5H1lY) · [footage source](https://www.youtube.com/watch?v=qPgWV8Rxemo)
 
 ---
 
-## Why this project
+## Highlights — what was hard here
 
-Modern autonomous driving systems must balance accuracy, latency, and power.
+- **Ported NVIDIA CUDA-PointPillars to a new toolchain generation and dataset.** JetPack 5.x→6.x, TensorRT 8.x→**10.3**, CUDA 11.4→12.6, C++14→17, KITTI→**nuScenes (10 classes)**, and single-level→**3-level FPN** (10 TRT bindings). Wrote a **CHW scatter CUDA kernel** and run VFE/scatter in C++ so the TRT engine carries only SECOND + FPN + head.
+- **Debugged real on-device CUDA/memory failures.** Fixed an NMS `h_mask_` allocation that ballooned to **12.8 GB** on dense urban frames (→ 128 KB by capping `nms_pre=1000`), added a **zero-detection guard** (0 CUDA grid blocks were crashing `nms_launch`), and fixed an unsigned-counter bounds bug.
+- **Live camera-LiDAR late fusion.** Two TensorRT engines running **concurrently** in ROS2 under a 25 W power mode, time-synced with `message_filters` ApproximateTime, matched in BEV, visualized in RViz2 — not an offline notebook.
+- **Full deployment surface.** A ROS2 Humble package (3 nodes + launch + pre-loaded RViz config) and a **two-container Docker** setup (lean production runtime vs. R&D image), mirroring OTA-style edge deployment.
+- **Zero-copy C++ TensorRT runtime.** Jetson UMA pinned-mapped memory (no `cudaMemcpy` in the hot path), pre-allocated buffers, `enqueueV3` / `setTensorAddress` (TRT 10.x API), allocation-free per-frame decode.
+- **Camera path** (supporting): YOLO26n TensorRT INT8 at **~200 FPS / ~8 W**, with a hand-written decoder **~32× faster** than the Python/Ultralytics equivalent.
 
-This project explores those trade-offs by building a full perception pipeline
-optimized for edge deployment, where GPU resources are limited and
-real-time constraints are strict.
+---
 
-This project focuses on real-world deployment constraints—such as zero-copy memory management, INT8 quantization, and containerized deployment—rather than maximizing benchmark accuracy.
+## System at a glance
+
+| Subsystem     | Model                            | Precision | On-device performance                   | Notes                                    |
+| ------------- | -------------------------------- | --------- | --------------------------------------- | ---------------------------------------- |
+| **LiDAR 3D**  | CUDA-PointPillars FPN3           | FP16      | **37–45 FPS** (25–30 ms)                | nuScenes 10-class, 100 m range, ~43K pts |
+| **Fusion**    | BEV late fusion (dual engine)    | —         | live @ bag rate, **40–100% match**      | needs 25 W mode for 2 concurrent engines |
+| **Camera 2D** | YOLO26n (NMS-free)               | INT8      | **~200 FPS** @ ~8 W                     | 1280×720, USB camera                     |
+| **Runtime**   | hand-written C++/TensorRT + CUDA | —         | UMA zero-copy, allocation-free hot path | TRT 10.3 · JetPack 6 · SM87              |
+
+**Hardware:** Jetson Orin Nano Super 8GB (67 TOPS), ~$250 + ~$10 USB webcam. **Training:** Google Colab (Tesla T4). **Benchmark conditions:** `sudo jetson_clocks` (clocks locked).
+
+> This project targets **deployment engineering** — zero-copy memory, INT8/FP16, multi-engine scheduling, and containerized edge delivery — not benchmark-topping accuracy. Models are trained on nuScenes Mini and the pipeline accepts any production weight.
+
+---
+
+## The hard part: porting CUDA-PointPillars
+
+NVIDIA's [CUDA-PointPillars](https://github.com/NVIDIA-AI-IOT/CUDA-PointPillars) targets KITTI on JetPack 5.x (TRT 8.x, CUDA 11.4, C++14). Running our **nuScenes-trained mmdetection3d FPN3 model** on JetPack 6.x required a generation-level port plus full 3-level FPN support.
+
+| File                            | Change                                                                                                                                                                                                               |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tensorrt.cpp`                  | Full **TRT 10.x** API port (binding API removed in TRT 10 → `getNbIOTensors`, `enqueueV3`)                                                                                                                           |
+| `lidar-backbone.cu`             | **CHW scatter kernel** + FPN3 backbone engine (10 bindings, 3 output levels)                                                                                                                                         |
+| `lidar-backbone.hpp`            | Multi-level virtual accessors (`cls1/box1/dir1`, `cls2/box2/dir2`, `is_fpn3()`)                                                                                                                                      |
+| `pointpillar.cpp` / `.hpp`      | `max_levels` core param; postprocess on all FPN levels, anchors scaled per level, results merged                                                                                                                     |
+| `lidar-postprocess.cu` / `.hpp` | **NCHW-correct decode** for cls/box/dir (`channel·HW + loc`, anchor-major to match mmdet3d `Anchor3DHead`); nuScenes 10 classes / 8 anchors / bbox code-size 9; NMS safety cap; zero-detection guard; `nms_pre=1000` |
+| `main.cpp` / `CMakeLists.txt`   | nuScenes voxelization + FPN3 engine path; `-std=c++17`                                                                                                                                                               |
+
+**Why a 3-level FPN was required:** the single-level export (feat[0] only) missed **all cars and large objects** — they're detected at level 1 (100×100, ×2 anchor scale) and level 2 (50×50, ×4 anchor scale).
+
+| Level | Grid    | Anchor scale | Primary detections                         |
+| ----- | ------- | ------------ | ------------------------------------------ |
+| 0     | 200×200 | ×1           | pedestrian, bicycle, traffic_cone, barrier |
+| 1     | 100×100 | ×2           | car, construction_vehicle                  |
+| 2     | 50×50   | ×4           | truck, bus, trailer                        |
+
+**On-device NMS crash fixes (real debugging trail):**
+
+- **`h_mask_` OOM** — original allocates `det_num × DIVUP(det_num,64) × 8` bytes; at level 0 (`det_num`=320,000) that's **12.8 GB**. Capping `nms_pre=1000` brings it to **128 KB**.
+- **Zero-detection guard** — `nms_launch` launches 0 grid blocks when no boxes survive threshold → crash. Added an early return.
+- **Unsigned bounds bug** — `bndbox_num_` is unsigned, so a `<= 0` check is always false; switched to an upper-bound `> det_num_` check.
+
+Full details, setup, and the FPN3 engine build: [`cuda-pointpillars-patches/README.md`](cuda-pointpillars-patches/README.md).
 
 ---
 
 ## Demo
 
-### Live Camera Inference — USB Webcam (202 FPS)
+### 1 · LiDAR 3D Detection — CUDA-PointPillars FPN3 on Jetson (~37–45 FPS)
 
-> Recorded with phone camera. USB webcam pointed at Tokyo driving footage.
-> C++ TRT INT8 pipeline running inside a Docker container on Jetson Orin Nano Super 8GB.
-
-📹 **[Watch: Live Camera Demo](https://youtu.be/zx4OrOlAXBs)**
-
-```
-Camera        : USB webcam, 1280×720 @ 30 FPS
-Frames        : 13,785
-Mean FPS      : 203.4
-Preprocess    : 1.1ms
-TRT inference : 3.7ms
-Total power   : 8.03W (VDD_IN)  ← under 10W at real-world load
-GPU load      : 19–39%  @  54.7°C
-CPU load      : 6%      @  55.7°C
-RAM           : ~200MB inference overhead (1.9GB total)
-```
-
----
-
-### Pre-recorded Video Inference — Tokyo Driving Footage (183 FPS)
-
-> Screen recording via VNC. NVDEC hardware-accelerated video decode.
-> VNC adds ~10–15 FPS overhead vs native — isolated inference reaches ~195 FPS.
-
-📹 **[Watch: Video Inference Demo](https://youtu.be/UsOV8r5H1lY)**
-
-```
-Input         : 1280×720 @ 50 FPS (NVDEC hardware decode)
-Mean FPS      : 183.5  (195.2 FPS without VNC)
-Preprocess    : 1.2ms
-TRT inference : 4.1ms
-Total power   : 10.53W (VDD_IN)  ← higher due to VNC + NVDEC load
-GPU load      : 31–42%  @  55.8°C
-CPU load      : 34%     @  55.5°C  ← VNC CPU overhead
-RAM           : ~200MB inference overhead (2.1GB total)
-```
-
-**Note on power difference:**
-```
-Base system power (idle) : ~7.3W  (same for both)
-USB camera overhead      : +0.7W  → 8.03W total
-Video + NVDEC overhead   : +3.2W  → 10.53W total
-Isolated video (no VNC)  : +2.9W  → 10.2W total
-```
-
----
-
-### ROS2 Pipeline — nuScenes Bag Replay (~180 FPS)
-
-> Full ROS2 pipeline: nuScenes bag → camera_node → /detections/camera
-> TRT INT8 inference via ROS2 topics on 1600×900 nuScenes front camera images.
-
-```
-Bag replay  : /nuscenes/camera/image_raw  @ 2 Hz
-camera_node : TRT INT8 inference          @ ~180 FPS (jetson_clocks)
-Publishes   : /detections/camera (Detection2DArray)
-              /camera/annotated  (Image)
-```
-
-```bash
-# Generate nuScenes bag (one time)
-python3 scripts/nuscenes_to_ros2bag.py \
-    --dataroot /data/sets/nuscenes --output bags/nuscenes_scene0
-
-# Run full pipeline
-sudo jetson_clocks
-./scripts/run_ros2_bag_demo.sh
-```
-
----
-
-### ROS2 RViz2 — Camera Detections in 3D BEV (MarkerArray)
-
-> Full ROS2 pipeline with 3D visualization. Colored cylinders represent
-> camera detections projected to ground plane. Labels show class + distance.
-> RViz2 config auto-loads — no manual setup needed.
-
-![RViz2 MarkerArray BEV](demo/screenshots/ros2/rviz2_camera_markers.gif)
-
-```
-Right  : /camera/annotated — detection boxes + FPS HUD
-Left   : /detections/camera_markers — 3D cylinders in BEV
-        car (yellow) · pedestrian (red) · bus (cyan) · barrier (magenta)
-        Cylinder height = confidence score
-        Label = class + estimated distance
-```
-
-```bash
-# One-command demo (bag + camera_node + TF + RViz2 in single container)
-sudo jetson_clocks
-xhost +local:docker
-./scripts/run_ros2_rviz_demo.sh
-```
-
----
-
-### CUDA-PointPillars on Jetson — LiDAR 3D Detection (~37-45 FPS)
-
-> NVIDIA CUDA-PointPillars patched for SM87 + TRT 10.3.0 running our
-> nuScenes-trained FPN3 model. Full pipeline: voxelization → CHW scatter →
-> TRT FPN3 backbone (3 levels) → NMS → detections.
-> Detects all 10 nuScenes classes across full 100m × 100m range.
+> NVIDIA CUDA-PointPillars patched for SM87 + TRT 10.3.0, running our nuScenes-trained FPN3 model.
+> Full pipeline: voxelization → CHW scatter → TRT FPN3 backbone (3 levels) → NMS → detections.
+> Detects all 10 nuScenes classes across the full 100 m × 100 m range.
 
 ![CUDA-PointPillars BEV](demo/screenshots/ros2/pointpillars_bev.png)
 
@@ -145,23 +87,19 @@ Classes: all 10 nuScenes classes (car, pedestrian, bicycle, truck, bus, ...)
 ```
 
 ```bash
-# Setup and run 
+# Setup and run
 cd cuda-pointpillars/build
 export CUDASM=87
 ./pointpillar ../data/ ../data/ --timer
 ```
+
 See [`cuda-pointpillars-patches/README.md`](cuda-pointpillars-patches/README.md) for full instructions.
 
----
+### 2 · Camera-LiDAR Late Fusion — live in ROS2 / RViz2
 
-### Camera-LiDAR Late Fusion — ROS2 RViz2 BEV
-
-> Real-time late fusion running on Jetson Orin Nano Super.
-> nuScenes bag replayed through camera_node (YOLO26n TRT INT8) and
-> lidar_detection_node (CUDA-PointPillars FPN3 TRT FP16), fused in BEV.
->
-> Red = fused | Green = camera only | Blue = LiDAR only
-> Stats overlay shows live CAM / LiDAR / FUSED count per frame.
+> Real-time late fusion on the Orin. nuScenes bag replayed through `camera_node` (YOLO26n TRT INT8)
+> and `lidar_detection_node` (CUDA-PointPillars FPN3 TRT FP16), fused in BEV.
+> Red = fused · Green = camera only · Blue = LiDAR only. Live CAM / LiDAR / FUSED count per frame.
 
 ![Fusion BEV RViz2](demo/screenshots/ros2/fusion_rviz2.gif)
 
@@ -179,12 +117,47 @@ xhost +local:docker
 ./scripts/run_ros2_rviz_demo.sh
 ```
 
----
+### 3 · ROS2 Pipeline + RViz2 — Camera detections in 3D BEV (MarkerArray)
 
-### Camera-LiDAR Late Fusion — Bird's Eye View (Colab)
+> Full ROS2 pipeline with 3D visualization. Colored cylinders = camera detections projected to the
+> ground plane; labels show class + distance. RViz2 config auto-loads — no manual setup.
 
-PointPillars 3D detections fused with YOLO26n 2D detections on
-nuScenes Mini. Blue = LiDAR only | Green = Camera only | Red = Fused.
+![RViz2 MarkerArray BEV](demo/screenshots/ros2/rviz2_camera_markers.gif)
+
+```
+Right  : /camera/annotated — detection boxes + FPS HUD
+Left   : /detections/camera_markers — 3D cylinders in BEV
+        car (yellow) · pedestrian (red) · bus (cyan) · barrier (magenta)
+        Cylinder height = confidence score · Label = class + estimated distance
+```
+
+```bash
+# Headless bag → TRT → detections
+python3 scripts/nuscenes_to_ros2bag.py --dataroot /data/sets/nuscenes --output bags/nuscenes_scene0
+sudo jetson_clocks
+./scripts/run_ros2_bag_demo.sh
+```
+
+### 4 · Camera 2D Detection — YOLO26n TensorRT INT8 (~200 FPS, supporting)
+
+> C++ TRT INT8 pipeline running inside a Docker container on the Orin. USB webcam on Tokyo footage.
+
+📹 **[Watch: Live Camera Demo](https://youtu.be/zx4OrOlAXBs)** · **[Video Inference Demo](https://youtu.be/UsOV8r5H1lY)**
+
+```
+Camera        : USB webcam, 1280×720 @ 30 FPS
+Frames        : 13,785
+Mean FPS      : 203.4
+Preprocess    : 1.1ms
+TRT inference : 3.7ms
+Total power   : 8.03W (VDD_IN)  ← under 10W at real-world load
+GPU load      : 19–39%  @  54.7°C   |   CPU load: 6% @ 55.7°C
+RAM           : ~200MB inference overhead (1.9GB total)
+```
+
+### 5 · Camera-LiDAR Fusion — offline reference (Colab)
+
+> PointPillars 3D + YOLO26n 2D on nuScenes Mini. Blue = LiDAR only · Green = camera only · Red = fused.
 
 ![Fusion BEV](demo/screenshots/fusion/fusion_bev_final.png)
 
@@ -199,14 +172,12 @@ See [`fusion/README.md`](fusion/README.md) for details.
 │                     EdgeDrive Perception                         │
 ├────────────────────────────┬─────────────────────────────────────┤
 │  Camera Pipeline           │  LiDAR Pipeline                     │
-│                            │                                     │
 │  nuScenes CAM_FRONT        │  nuScenes LIDAR_TOP                 │
 │       ↓                    │       ↓                             │
 │  YOLO26n (fine-tuned)      │  PointPillars FPN3 (mmdetection3d)  │
 │  2D detection + segmask    │  3D detection — 10 classes, 100m    │
 │       ↓                    │       ↓                             │
 │  Ground plane → BEV (x,y)  │  LiDAR→Ego  transform               │
-│                            │                                     │
 ├────────────────────────────┴─────────────────────────────────────┤
 │              Late Fusion in BEV — ROS2 + Colab                   │
 │    BEV distance matching (8m) | 40–100% cam dets matched/frame   │
@@ -231,177 +202,92 @@ See [`fusion/README.md`](fusion/README.md) for details.
 
 ## Results
 
-### YOLO Model Comparison (nuScenes Mini, 100 epochs)
-
-| Model | Task | mAP50 | mAP50-95 | Params | Size |
-|---|---|---|---|---|---|
-| YOLO26n-det | Detection | 0.558 | 0.343 | 2.5M | 5.1 MB |
-| YOLO26n-seg | Det + Seg | 0.594 | 0.360 | 2.9M | 6.2 MB |
-| YOLOv8n-det | Detection | 0.671 | 0.409 | 3.2M | 5.9 MB |
-
-YOLO26n chosen for Jetson deployment despite lower FP32 mAP because
-its NMS-free head eliminates post-processing latency and shows superior
-quantization robustness (INT8 improves over FP32).
-
-### Quantization Results (YOLO26n-det, Colab TFLite)
-
-| Format | mAP50 | vs FP32 | Size |
-|---|---|---|---|
-| FP32 (baseline) | 0.5668 | — | 5.1 MB |
-| FP16 TFLite | 0.5704 | +0.0036 | 4.8 MB |
-| INT8 PTQ | **0.5713** | **+0.0045** | 2.7 MB |
-| INT8 QAT | 0.5700 | +0.0032 | 2.7 MB |
-
-INT8 PTQ improves over FP32, suggesting quantization acts as a
-regularizer on the small dataset. QAT showed no further improvement,
-confirming PTQ is sufficient for this architecture.
-
-### PointPillars (published, full nuScenes val)
-
-| Metric | Value |
-|---|---|
-| mAP | 0.354 |
-| NDS | 0.476 |
-
-### Camera-LiDAR Fusion (nuScenes Mini, sample 1)
-
-| | Count |
-|---|---|
-| Camera detections | 17 |
-| LiDAR detections | 18 |
-| Fused matches | 13 |
-| LiDAR-only | 5 |
-| Camera-only | 4 |
-
-### Fusion Strategy
-
-Fusion is performed on single-frame detections without temporal tracking.
-Class-aware nearest-neighbor matching is performed in BEV (12m threshold).
-Fused confidence:
+### On-device latency — LiDAR (CUDA-PointPillars FPN3, TRT FP16)
 
 ```
-Score = 0.6 × LiDAR + 0.4 × Camera
+                    KITTI data (~19K pts)    nuScenes data (~43K pts)
+Voxelization      :  0.2ms                   0.2ms
+Backbone+Head     : 12-15ms                  13-17ms  (FPN3, 3 levels)
+Decoder+NMS       :  6-11ms                  8-12ms   (per-level, merged)
+Total (warm)      : 20-25ms  (~45 FPS)       25-30ms  (~37 FPS)
+Detections        : 6-58 / frame             140-191 / frame
 ```
 
-LiDAR is weighted higher due to more reliable spatial localization,
-while camera contributes semantic confidence.
+`max_levels=3` in the standalone binary; `max_levels=2` in ROS2 (memory-constrained alongside the concurrent camera engine).
 
-### Solutions API Demos (nuScenes Front Camera)
+### On-device latency — Camera (C++ vs Python, why C++)
 
-Five real-time analytics demos built on YOLO26n using the Ultralytics
-Solutions API, validated on nuScenes driving video:
+Same hardware, same engine. The takeaway is that the engine is identical across runtimes — the speedup is in preprocessing and the decoder, which is where deployment engineering lives.
 
-| Demo | Output |
-|---|---|
-| Heatmap | Spatial density of all detections across frames |
-| Object Counting | Per-class counts with crossing line detection |
-| Analytics | Real-time bar chart of detection distribution |
-| Speed Estimation | Per-object velocity (stationary camera only) |
-| Segmentation | Instance masks using YOLO26n-seg |
-
-See [`solutions/README.md`](solutions/README.md) for demos.
-
-### Jetson Orin Nano Super Benchmarks
-
-**Hardware:** Jetson Orin Nano Super 8GB (67 TOPS) | JetPack R36.4.7 | CUDA 12.6 | TensorRT 10.3.0
-**Benchmark conditions:** `sudo jetson_clocks` (max clocks locked)
-
-#### Full Pipeline Breakdown — C++ TRT INT8 Deployment 
-**[(footage video source)](https://www.youtube.com/watch?v=qPgWV8Rxemo)**
-| Format | FPS | Pre | TRT | Post | Total/frame | Engine |
-|---|---|---|---|---|---|---|
-| **C++ TRT INT8 (USB camera)** | **202.6** | **1.1ms** | **3.7ms** |  **~0.1ms** | **4.8ms** | 5.4 MB |
-| **C++ TRT INT8 (video NVDEC)** | **195.2** | **1.2ms** | **4.1ms** |  **~0.1ms** | **5.3ms** | 5.4 MB |
-| **C++ TRT INT8 (video NVDEC + VNC)** | **183.5** | **1.1ms** | **4.0ms** |  **~0.1ms** | **5.1ms** | 5.4 MB |
-
-#### Full Pipeline Breakdown — 404 nuScenes Images, 60s run
-
-| Format | FPS | Pre | TRT | Post | Total/frame | Engine |
-|---|---|---|---|---|---|---|
-| Python FP32 | 29.1 | 5.2ms | 27.6ms | 1.1ms | 34.0ms | 5.1 MB |
-| Python TRT FP16 | 87.6 | 5.6ms | 4.2ms | 1.2ms | 11.0ms | 8.0 MB |
-| Python TRT INT8 | 78.5 | 5.6ms | **3.5ms** | 3.2ms | 12.3ms | 5.4 MB |
-| **C++ TRT INT8 (bench)** | **193.3** | **1.7ms** | **3.5ms** |  **~0.1ms** | **5.1ms** | 5.4 MB |
+| Format                         | FPS       | Pre       | TRT       | Post       | Total/frame | Engine |
+| ------------------------------ | --------- | --------- | --------- | ---------- | ----------- | ------ |
+| **C++ TRT INT8 (USB camera)**  | **202.6** | **1.1ms** | **3.7ms** | **~0.1ms** | **4.8ms**   | 5.4 MB |
+| **C++ TRT INT8 (video NVDEC)** | **195.2** | **1.2ms** | **4.1ms** | **~0.1ms** | **5.3ms**   | 5.4 MB |
+| C++ TRT INT8 (Benchmark)       | 193.3     | 1.7ms     | 3.5ms     | ~0.1ms     | 5.1ms       | 5.4 MB |
+| Python TRT INT8 (Benchmark)    | 78.5      | 5.6ms     | **3.5ms** | 3.2ms      | 12.3ms      | 5.4 MB |
+| Python TRT FP16 (Benchmark)    | 87.6      | 5.6ms     | 4.2ms     | 1.2ms      | 11.0ms      | 8.0 MB |
+| Python FP32 (Benchmark)        | 29.1      | 5.2ms     | 27.6ms    | 1.1ms      | 34.0ms      | 5.1 MB |
 
 ```
+TRT inference is identical across runtimes (3.5ms) — confirms correct C++ implementation.
+C++ preprocessing  : 1.7ms  vs  Python 5.6ms  (PIL/NumPy + GIL)        → 3.3× faster
+C++ decoder        : ~0.1ms vs  Python INT8 postprocess 3.2ms          → 32× faster
+  (raw-pointer 8400-anchor loop, cxcywh→xyxy, score filter, class-agnostic NMS)
+End-to-end         : C++ TRT INT8 202.6 FPS  vs  Python FP32 29.1 FPS  → +596%
+
 Benchmark uses 1600×900 nuScenes images. USB camera and video use 1280×720 → faster preprocessing.
-C++ postprocess (~0.1ms) = custom decoder: 8400-anchor loop + cxcywh→xyxy + NMS.
-Not timed in profiler (below measurement overhead). 
-Python INT8 postprocess (3.2ms) = Ultralytics unpacking INT8 tensor into Python objects + Python NMS — 32× slower.
 ```
 
-#### Full Pipeline Breakdown — Single Image (20 iterations)
+### Quantization (YOLO26n-det, Colab TFLite)
 
-| Format | FPS | Pre | TRT | Post | Total/frame |
-|---|---|---|---|---|---|
-| Python FP32 | 22.6 | 6.3ms | 28.7ms | 0.9ms | 35.9ms |
-| Python TRT FP16 | 50.3 | 6.7ms | 4.5ms | 1.3ms | 12.5ms |
-| Python TRT INT8 | 47.4 | 6.5ms | 3.7ms | 3.5ms | 13.7ms |
-| **C++ TRT INT8** | **193.0** | **1.7ms** | **3.4ms** | **~0.1ms** | **5.1ms** |
+| Format          | mAP50      | vs FP32     | Size   |
+| --------------- | ---------- | ----------- | ------ |
+| FP32 (baseline) | 0.5668     | —           | 5.1 MB |
+| FP16 TFLite     | 0.5704     | +0.0036     | 4.8 MB |
+| INT8 PTQ        | **0.5713** | **+0.0045** | 2.7 MB |
+| INT8 QAT        | 0.5700     | +0.0032     | 2.7 MB |
 
-#### Key Observations
+INT8 PTQ slightly improves over FP32 — quantization acting as a regularizer on the small dataset. QAT added nothing, confirming PTQ suffices for this anchor-free architecture. (TFLite proves quantization correctness on Colab; TensorRT proves real-time performance on Jetson — evaluated independently.)
 
-**C++ preprocessing is 3.3× faster than Python:**
-```
-Python preprocessing : 5.6ms (PIL/NumPy with GIL overhead)
-C++ preprocessing    : 1.7ms (OpenCV letterbox, pre-allocated Mats)
-```
+### Model selection (nuScenes Mini, 100 epochs)
 
-**TRT inference matches across both runtimes (same hardware, same engine):**
-```
-Python TRT INT8 : 3.5ms
-C++ TRT INT8    : 3.5ms ← identical, confirms correct implementation
-```
+| Model       | Task      | mAP50 | mAP50-95 | Params | Size   |
+| ----------- | --------- | ----- | -------- | ------ | ------ |
+| YOLO26n-det | Detection | 0.558 | 0.343    | 2.5M   | 5.1 MB |
+| YOLO26n-seg | Det + Seg | 0.594 | 0.360    | 2.9M   | 6.2 MB |
+| YOLOv8n-det | Detection | 0.671 | 0.409    | 3.2M   | 5.9 MB |
 
-**Python INT8 is slower than FP16 despite faster TRT inference:**
-```
-Python FP16: TRT 4.2ms + postprocess 1.2ms = 5.4ms GPU work → 87.6 FPS
-Python INT8: TRT 3.5ms + postprocess 3.2ms = 6.7ms GPU work → 78.5 FPS
-INT8 postprocessing is 2.7× slower than FP16 due to Ultralytics
-output tensor layout differences — not a model issue, a runtime issue.
-C++ decoder handles INT8 output directly with no such overhead.
-```
+YOLO26n chosen over the higher-mAP YOLOv8n because its **NMS-free head** removes post-processing latency on Jetson, shows better INT8 robustness, and gives tighter latency variance — the right call for real-time edge deployment.
 
-**C++ postprocess is 32× faster than Python INT8:**
-```
-Python INT8 postprocess : 3.2ms  (tensor unpacking + NMS in Python)
-C++ custom decoder      : ~0.1ms (raw pointer loop + NMS in C++)
-  → 8400-anchor loop, cxcywh→xyxy, score filter, class-agnostic NMS
-  → below profiler measurement threshold, excluded from timer
-```
+### LiDAR reference accuracy & fusion (nuScenes)
 
-**C++ total speedup over Python FP32:**
-```
-Python FP32            : 29.1 FPS
-C++ TRT INT8 (camera)  : 202.6 FPS         → +596% faster
-ROS2 TRT INT8 (bag)    : ~180 FPS @ 1600x900 → full pipeline via topics
-```
+| PointPillars (published, full val) | Value |     | Fusion (nuScenes Mini, sample 1) | Count      |
+| ---------------------------------- | ----- | --- | -------------------------------- | ---------- |
+| mAP                                | 0.354 |     | Camera / LiDAR detections        | 17 / 18    |
+| NDS                                | 0.476 |     | Fused / cam-only / LiDAR-only    | 13 / 4 / 5 |
 
-#### Power & Thermal
+### Power & thermal
 
-| Condition | FPS | VDD_IN | CPU+GPU | GPU % | Temp |
-|---|---|---|---|---|---|
-| Benchmark (jetson_clocks, 404 images) | 193.3 | ~12.2W | ~5.0W | 57-87% | ~58°C |
-| **USB camera (30 FPS real-world load)** | **202.6** | **8.03W** | **2.0W** | **19-39%** | **~55°C** |
-| Video + NVDEC (no VNC) | 195.2 | ~10.2W | ~3.0W | 31-42% | ~56°C |
+| Condition                          | FPS       | VDD_IN    | CPU+GPU  | GPU %  | Temp  |
+| ---------------------------------- | --------- | --------- | -------- | ------ | ----- |
+| **USB camera (30 FPS real-world)** | **202.6** | **8.03W** | **2.0W** | 19-39% | ~55°C |
+| Video + NVDEC (no VNC)             | 195.2     | ~10.2W    | ~3.0W    | 31-42% | ~56°C |
+| Benchmark (jetson_clocks, stress)  | 193.3     | ~12.2W    | ~5.0W    | 57-87% | ~58°C |
 
 ```
-Base system idle        : ~7.3W
-USB camera overhead     : +0.7W → 8.03W  ← real deployment power
-Video + NVDEC overhead  : +2.9W → ~10.2W  ← NVDEC sharing UMA bandwidth
-Benchmark (stress test) : +4.9W → 12.2W  ← worst-case sustained load
+Base idle 7.3W  +  USB camera 0.7W = 8.03W (real deployment)  |  stress max 12.2W (synthetic)
 ```
 
 **Under real 30 FPS camera load, the pipeline stays under 10W** —
 the 12.2W benchmark figure is a synthetic maximum, not typical deployment power.
 
-#### Benchmark Plot
+### Benchmark Plot
 
 ![Benchmark Results](benchmarks/plots/benchmark_results.png)
 
-*Generated by `python3 scripts/plot_results.py --save`*
+_Generated by `python3 scripts/plot_results.py --save`_
 
-#### TensorRT Export Notes
+### TensorRT Export Notes
 
 - FP16 build time: ~529s (first-time layer optimization on Jetson SM87)
 - INT8 build time: ~428s (includes INT8 calibration on 81 nuScenes val images)
@@ -413,45 +299,30 @@ the 12.2W benchmark figure is a synthetic maximum, not typical deployment power.
 
 ## Hardware
 
-| Component | Spec | Cost |
-|---|---|---|
-| Edge compute | Jetson Orin Nano Super 8GB Developer Kit | ~$250 |
-| Camera | USB webcam (1080p) | ~$10 |
-| Total | | **~$260** |
+| Component    | Spec                                     | Cost      |
+| ------------ | ---------------------------------------- | --------- |
+| Edge compute | Jetson Orin Nano Super 8GB Developer Kit | ~$250     |
+| Camera       | USB webcam (1080p)                       | ~$10      |
+| Total        |                                          | **~$260** |
 
 Training: Google Colab (Tesla T4 GPU, free tier)
 
 ---
 
-## Repository Structure
+## Repository structure
 
 ```
 EdgeDrive-Perception/
-├── training/              ← YOLO fine-tuning, quantization, pruning
-│   ├── convert_nuscenes_det.py
-│   ├── convert_nuscenes_seg.py
-│   ├── train_yolo26n.py
-│   ├── train_yolo26n_seg.py
-│   ├── train_yolov8n.py
-│   ├── export_all_formats.py
-│   ├── quantize.py
-│   ├── prune.py
-│   └── README.md
-├── solutions/             ← Ultralytics Solutions API demos
-│   ├── heatmap_demo.py
-│   ├── object_counting_demo.py
-│   ├── analytics_demo.py
-│   ├── speed_estimation_demo.py
-│   ├── segmentation_demo.py
-│   └── README.md
-├── fusion/                ← PointPillars + Camera-LiDAR fusion
-│   ├── train_pointpillars.py
-│   ├── pointpillars_inference.py
-│   ├── bev_visualization.py
-│   ├── camera_to_bev.py
-│   ├── late_fusion.py
-│   ├── fusion_evaluation.py
-│   └── README.md
+├── cuda-pointpillars-patches/   ← ★ patches for NVIDIA-AI-IOT/CUDA-PointPillars
+│   ├── README.md                ← setup + architecture + performance
+│   ├── tensorrt.cpp             ← TRT 10.x API (getNbIOTensors, enqueueV3)
+│   ├── lidar-backbone.hpp       ← FPN3 multi-level virtual accessors
+│   ├── lidar-backbone.cu        ← CHW scatter kernel + FPN3 backbone (10 bindings)
+│   ├── pointpillar.hpp          ← max_levels CoreParameter
+│   ├── pointpillar.cpp          ← 3-level postprocess + merge
+│   ├── lidar-postprocess.cu     ← NMS safety cap, zero-det guard, nms_pre=1000
+│   ├── lidar-postprocess.hpp    ← nuScenes 10 classes, 8 anchors, bbox_code=9
+│   └── main.cpp                 ← nuScenes voxelization + FPN3 engine path
 ├── deployment/            ← Jetson TensorRT C++ pipeline
 │   ├── CMakeLists.txt
 │   ├── README.md          ← build + run instructions
@@ -504,6 +375,15 @@ EdgeDrive-Perception/
 │   │           ├── camera_node.yaml
 │   │           └── edgedrive.rviz           ← camera + LiDAR + fusion displays pre-loaded
 │   └── README.md
+├── training/              ← YOLO fine-tuning, quantization, pruning
+│   ├── python scripts     ← python / colab scripts reference
+│   └── README.md
+├── solutions/             ← Ultralytics Solutions API demos
+│   ├── python scripts     ← python / colab scripts reference
+│   └── README.md
+├── fusion/                ← PointPillars + Camera-LiDAR fusion
+│   ├── python scripts     ← python / colab scripts reference
+│   └── README.md
 ├── notebooks/
 │   └── development_walkthrough.ipynb  ← Complete Google Colab notebook
 ├── scripts/
@@ -518,16 +398,6 @@ EdgeDrive-Perception/
 │   ├── make_test_video.py           ← stitch nuScenes images → .mp4
 │   ├── hardware_monitor.py          ← real-time Jetson hardware monitor
 │   └── plot_results.py              ← benchmark visualization
-├── cuda-pointpillars-patches/ ← patches for NVIDIA-AI-IOT/CUDA-PointPillars
-│   ├── README.md                ← setup + architecture + performance
-│   ├── tensorrt.cpp             ← TRT 10.x API (getNbIOTensors, enqueueV3)
-│   ├── lidar-backbone.hpp       ← FPN3 multi-level virtual accessors
-│   ├── lidar-backbone.cu        ← CHW scatter kernel + FPN3 backbone (10 bindings)
-│   ├── pointpillar.hpp          ← max_levels CoreParameter
-│   ├── pointpillar.cpp          ← 3-level postprocess + merge
-│   ├── lidar-postprocess.cu     ← NMS safety cap, zero-det guard, nms_pre=1000
-│   ├── lidar-postprocess.hpp    ← nuScenes 10 classes, 8 anchors, bbox_code=9
-│   └── main.cpp                 ← nuScenes voxelization + FPN3 engine path
 ├── bags/                  ← not in repo (generated by nuscenes_to_ros2bag.py)
 │   └── nuscenes_scene0/   ← nuScenes scene 0, camera + LiDAR, 39 frames @ 2Hz
 ├── benchmarks/
@@ -611,6 +481,7 @@ python training/quantize.py --mode ptq --runs_dir ./runs
 ### 6. Jetson Deployment
 
 **Option A — Docker (recommended):**
+
 ```bash
 # Build image on Jetson (~10-15 min, compiles C++ inside container)
 cd ~/EdgeDrive-Perception
@@ -627,6 +498,7 @@ docker compose -f docker/docker-compose.yml run --rm benchmark
 ```
 
 **Option B — Native (no Docker):**
+
 ```bash
 # Export TensorRT engines (must build on target Jetson)
 ./scripts/build_engine.sh all
@@ -657,7 +529,6 @@ docker build -t edgedrive-ros2:latest -f docker/Dockerfile.ros2 .
 # Run headless pipeline (bag → TRT → detections)
 sudo jetson_clocks
 ./scripts/run_ros2_bag_demo.sh
-│   ├── run_ros2_rviz_demo.sh     ← ROS2 bag + camera_node + lidar_detection_node + fusion_node + RViz2 (single container)
 
 # Run with RViz2 visualization (camera + LiDAR + fusion + RViz2)
 sudo nvpmodel -m 2    # 25W mode — required for dual TRT engines
@@ -675,144 +546,64 @@ xhost +local:docker
 # Run on nuScenes LiDAR data
 cp /data/sets/nuscenes/samples/LIDAR_TOP/<frame>.pcd.bin \
    cuda-pointpillars/data/
-cd cuda-pointpillars/build
+cd cuda-pointpillars/build && export CUDASM=87
 ./pointpillar ../data/ ../data/ --timer
 # Expected: ~25-30ms total, detections saved to ../data/*.txt
 ```
+
 See [`cuda-pointpillars-patches/README.md`](cuda-pointpillars-patches/README.md) for full instructions.
 
----
-
-## Pre-trained Weights
-
-Model weights are not stored in this repository.
-
-**Download from Google Drive:** *[`link`](https://drive.google.com/drive/folders/1e8lLJFoN3HOKB0HIsvc6w_RRpekOgi-n?usp=sharing)*
-
-Or reproduce by running the training scripts above.
-Training time: ~70 min per model on Tesla T4 (Google Colab).
+**Pre-trained weights:** [Google Drive](https://drive.google.com/drive/folders/1e8lLJFoN3HOKB0HIsvc6w_RRpekOgi-n?usp=sharing) (not stored in-repo). Or reproduce via the training scripts (~70 min/model on a T4).
 
 ---
 
 ## Documentation
 
-### Design & Analysis
-
-| Document | Description |
-|---|---|
-| [`docs/ros2_architecture.md`](docs/ros2_architecture.md) | ROS2 node graph, QoS config, nuScenes data pipeline, performance |
-| [`docs/architecture.md`](docs/architecture.md) | Full pipeline, UMA memory model, quantization flow |
-| [`docs/yolo26_vs_yolov8.md`](docs/yolo26_vs_yolov8.md) | Model selection rationale with data |
-| [`docs/nms_free_analysis.md`](docs/nms_free_analysis.md) | NMS-free head debug trail — 5 bugs found and fixed |
-| [`docs/sensor_fusion_analysis.md`](docs/sensor_fusion_analysis.md) | Late fusion design, coordinate transforms, ROS2 live results |
-| [`docs/class_distribution.md`](docs/class_distribution.md) | nuScenes class imbalance and impact on model confidence |
-| [`docs/solutions_on_edge.md`](docs/solutions_on_edge.md) | Ultralytics Solutions API evaluation, speed estimation limits |
-
-### Benchmarks
-
-| Document | Description |
-|---|---|
-| [`docs/benchmark_report.md`](docs/benchmark_report.md) | Summary, key findings, interpretation |
-| [`docs/optimization_log.md`](docs/optimization_log.md) | 11 optimizations + 1 rejected, all with before/after data |
-| [`benchmarks/results/jetson_python.md`](benchmarks/results/jetson_python.md) | Python FP32/FP16/INT8 full breakdown |
-| [`benchmarks/results/jetson_cpp.md`](benchmarks/results/jetson_cpp.md) | C++ TRT INT8 full breakdown + power/thermal |
-| [`benchmarks/results/quantization_colab.md`](benchmarks/results/quantization_colab.md) | TFLite quantization accuracy results |
-
-### Deployment
-
-| Document | Description |
-|---|---|
-| [`deployment/README.md`](deployment/README.md) | C++ build, all CLI args, BEV, Solutions reference |
-| [`docker/README.md`](docker/README.md) | Docker build, all run modes, volume mounts |
-| [`ros2_ws/README.md`](ros2_ws/README.md) | ROS2 package, nodes, topics, quick start |
-| [`cuda-pointpillars-patches/README.md`](cuda-pointpillars-patches/README.md) | CUDA-PointPillars patches, FPN3 engine build, NMS fixes |
-
-### Development Walkthrough
-
-Complete Google Colab development process including debugging steps and intermediate
-results:
-
-[`notebooks/development_walkthrough.ipynb`](notebooks/development_walkthrough.ipynb)
-
-Key decisions documented:
-- Why YOLO26n over YOLOv8n for edge deployment
-- Coordinate transform bugs (global→ego→camera)
-- Sample-level vs scene-level dataset split
-- Single-sweep LiDAR limitation on nuScenes Mini
-- Greedy matching failures in late fusion and fixes
-- Structured pruning attempt and why INT8 PTQ is sufficient
-- FPN3 export: why single-level missed cars, all 3 levels needed
-- NMS crash debugging on Jetson (bndbox_num_ OOM, zero-detection guard)
-- LiDAR coordinate transform debugging (calibrated_sensor quaternion)
+| Document                                                                                                        | Description                                                  |
+| --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| [`cuda-pointpillars-patches/README.md`](cuda-pointpillars-patches/README.md)                                    | ★ CUDA-PointPillars port, FPN3 engine build, NMS crash fixes |
+| [`deployment/README.md`](deployment/README.md)                                                                  | C++ build, all CLI args, BEV, Solutions reference            |
+| [`docker/README.md`](docker/README.md)                                                                          | Docker build, all run modes, volume mounts                   |
+| [`ros2_ws/README.md`](ros2_ws/README.md)                                                                        | ROS2 package, nodes, topics, quick start                     |
+| [`docs/ros2_architecture.md`](docs/ros2_architecture.md)                                                        | ROS2 node graph, QoS, nuScenes pipeline, performance         |
+| [`docs/architecture.md`](docs/architecture.md)                                                                  | Full pipeline, UMA memory model, quantization flow           |
+| [`docs/optimization_log.md`](docs/optimization_log.md)                                                          | 11 optimizations + 1 rejected, before/after data             |
+| [`docs/nms_free_analysis.md`](docs/nms_free_analysis.md)                                                        | NMS-free decoder debug trail — 5 bugs found and fixed        |
+| [`docs/sensor_fusion_analysis.md`](docs/sensor_fusion_analysis.md)                                              | Late fusion design, coordinate transforms, ROS2 results      |
+| [`docs/yolo26_vs_yolov8.md`](docs/yolo26_vs_yolov8.md) · [`docs/benchmark_report.md`](docs/benchmark_report.md) | Model selection · benchmark findings                         |
+| [`notebooks/development_walkthrough.ipynb`](notebooks/development_walkthrough.ipynb)                            | Full Colab development + debugging history                   |
 
 ---
 
-## Key Design Decisions
+## Key design decisions
 
-**Dockerized Production Architecture:**
-Deployment is separated into a lightweight production runtime container (`edgedrive`) and an R&D container (`edgedrive-ros2`). This mirrors industry best practices for Over-The-Air (OTA) updates on edge devices, preventing dependency hell while keeping the production image footprint minimal.
-
-**YOLO26n over YOLOv8n for deployment:**
-YOLOv8n achieves higher mAP50 (0.671 vs 0.558) on small data, but
-YOLO26n's NMS-free head removes post-processing latency on Jetson,
-shows better INT8 robustness (+0.45% mAP), and produces tighter
-latency variance — critical for real-time autonomous driving.
-
-**Late fusion over BEVFusion:**
-BEVFusion (unified camera-LiDAR network) achieves higher mAP but
-requires ~200MB model and runs at ~5 FPS on Jetson Orin Nano Super (67 TOPS).
-Late fusion achieves 40–100% camera detection match rate per frame in real-time
-ROS2 deployment. Each modality is independently debuggable and swappable
-— the correct tradeoff for edge deployment.
-
-**PTQ over QAT:**
-QAT showed no improvement over PTQ for YOLO26n (early stopping at
-epoch 1). YOLO26n's anchor-free architecture is inherently
-quantization-robust, making the expensive QAT fine-tuning loop
-unnecessary.
-
-**TFLite (Colab) vs TensorRT (Jetson):**
-Colab quantization uses TFLite to prove accuracy retention (INT8 +0.45%
-over FP32). Jetson deployment uses TensorRT for NVIDIA GPU-specific
-optimization. Both formats are evaluated independently — TFLite proves
-quantization correctness, TensorRT proves real-time performance.
+- **Dockerized prod / R&D split** — a lean production runtime container (`edgedrive`) separate from the ROS2 R&D image, mirroring OTA edge practice and keeping the production footprint minimal.
+- **Run VFE + scatter in C++, TRT carries SECOND+FPN+head** — matches the mmdetection3d export and avoids a custom scatter plugin inside the engine.
+- **Late fusion over BEVFusion** — a unified network needs ~200 MB and runs ~5 FPS on this SoC; independent, swappable, debuggable modalities are the right edge tradeoff (40–100% match rate live).
+- **YOLO26n over YOLOv8n** — NMS-free head, lower post-processing latency, better INT8 robustness, tighter latency variance.
+- **PTQ over QAT (camera)** — anchor-free YOLO26n is quantization-robust; QAT added nothing, so the expensive loop is unnecessary.
+- **TFLite (Colab) vs TensorRT (Jetson)** — Both formats are evaluated independently. TFLite proves quantization correctness, TensorRT proves real-time performance.
 
 ---
 
-## Known Limitations
+## Known limitations & roadmap
 
-This project targets **deployment engineering**, not production detection accuracy.
-The following limitations are expected and intentional:
+This project targets **deployment engineering**, not production detection accuracy. The following are expected and documented:
 
-**Small training dataset:**
-All models are trained on nuScenes Mini (323 train / 81 val images).
-This is ~0.01% of a production autonomous driving dataset.
-mAP50=0.558 on the val set reflects the data constraint, not the
-architecture ceiling. The same pipeline accepts any YOLO26n weight —
-production accuracy requires production data.
+- **Small training dataset** — nuScenes Mini (323 train / 81 val). mAP reflects the data constraint, not the architecture; the pipeline accepts any production weight.
+- **Single-camera, single-modality training** — CAM_FRONT only; degrades on non-driving perspectives and under-represented classes.
+- **Monocular depth approximation in fusion** — camera→BEV uses a ground-plane (z=0) assumption: accurate bearing, imprecise depth for off-ground objects. Live USB-webcam fusion needs per-rig extrinsic calibration not included here.
+- **Single-frame fusion (no temporal tracking)** — detections are matched per frame.
 
-**Single camera, single modality training:**
-Models are trained on CAM_FRONT images only. Detection performance
-degrades on images from non-driving perspectives (street-level,
-elevated angles) and on classes underrepresented in nuScenes Mini
-(bus, barrier, traffic cone). In production, multi-camera rigs
-and continuous retraining on proprietary data address this.
+**Planned hardening:**
 
-**Monocular depth approximation in fusion:**
-Camera BEV projection uses a ground-plane assumption (z=0) with nuScenes
-intrinsics. This gives accurate bearing angles but imprecise depth,
-especially for objects not on the ground plane. Angular matching
-compensates for this — full extrinsic calibration would improve accuracy.
-Live USB webcam fusion requires per-rig calibration not included here.
+- **Decode parity test + CI.** The LiDAR postprocess already decodes NCHW correctly (cls/box/dir indexed as `channel·HW + loc`, anchor-major); a CUDA-vs-mmdetection3d numerical parity test plus a CI build would _prove_ that equivalence rather than asserting it.
+- **Double-buffered inference** — overlap preprocessing of frame N+1 with GPU inference of frame N (expected +20–30% sustained throughput).
+- **Temporal tracking** — a 3D Kalman + association layer on top of fusion for stable IDs.
+- **Full Hungarian assignment** — `fusion_node`'s matcher is currently greedy over an angular-bearing cost; a true Hungarian solve would be optimal for dense frames.
 
 ---
 
 ## Background
 
-End-to-end autonomous driving perception stack built to demonstrate
-edge AI engineering capability — from dataset preparation and model
-training through quantization, sensor fusion, and Dockerized Jetson deployment.
-
-Developed on a ~$260 hardware budget (Jetson Orin Nano Super 8GB + USB webcam)
-using Google Colab for training. All code written from scratch on nuScenes,
-the same dataset used in real industry Co-MLOps autonomous driving research.
+End-to-end autonomous-driving perception stack built to demonstrate edge-AI engineering capability — dataset prep and training through quantization, sensor fusion, CUDA/TensorRT deployment, ROS2 integration, and Dockerized delivery — on a ~$260 hardware budget. All code written from scratch on nuScenes, the dataset used in real Co-MLOps autonomous-driving research.

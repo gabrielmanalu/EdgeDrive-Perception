@@ -26,11 +26,18 @@
  *   bbox_preds : [1, 72, 200, 200]  → channels = num_anchors × num_box_values
  *   dir_preds  : [1, 16, 200, 200]  → channels = num_anchors × 2
  *
- *   Note: The decode kernel uses channel-last indexing originally designed
- *   for KITTI. Our nuScenes model outputs NCHW (channel-first). The current
- *   implementation works in practice because the NMS safety cap prevents
- *   crashes from any indexing anomalies. Full NCHW-aware decoding is a
- *   planned improvement for the fusion_node phase.
+ *   Decode indexing (NCHW-correct): the postprocess kernel reads each tensor as
+ *   value = tensor[channel * (H*W) + loc], where loc = row*W + col is the BEV
+ *   cell. The channel axis is ANCHOR-MAJOR, matching mmdetection3d's
+ *   Anchor3DHead layout (conv output permute(0,2,3,1).reshape(..., num_classes)):
+ *     cls : channel = ith_anchor * num_classes    + class_i
+ *     box : channel = ith_anchor * num_box_values + j
+ *     dir : channel = ith_anchor * 2              + {0,1}
+ *   This channel-first indexing is the key divergence from the original KITTI
+ *   code; the decode below is fully NCHW-aware (see the `// NCHW fix` lines in
+ *   postprocess_kernal). The NMS bounds check (below) is an independent
+ *   robustness guard against an out-of-range detection count — NOT a workaround
+ *   for tensor indexing.
  *
  * nuScenes classes (10):
  *   0:car  1:truck  2:bus  3:trailer  4:construction_vehicle

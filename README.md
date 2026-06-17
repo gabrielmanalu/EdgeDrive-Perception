@@ -213,7 +213,7 @@ Total (warm)      : 20-25ms  (~45 FPS)       25-30ms  (~37 FPS)
 Detections        : 6-58 / frame             140-191 / frame
 ```
 
-`max_levels=3` in the standalone binary; `max_levels=2` in ROS2 (memory-constrained alongside the concurrent camera engine).
+`max_levels` defaults to **3 (full FPN3)** and is used as-is in both the standalone binary and the ROS2 pipeline, so trucks/buses/trailers (the coarse FPN levels) are detected live. The knob can drop to 2 or 1 to trade large-object recall for memory, but the deployment does not lower it.
 
 ### On-device latency — Camera (C++ vs Python, why C++)
 

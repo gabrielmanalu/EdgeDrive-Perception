@@ -107,9 +107,10 @@ nuScenes LIDAR_TOP quaternion: [0.7077955, -0.006492, 0.010646, -0.7063073]
 (derived from calibrated_sensor rotation matrix, verified empirically)
 ```
 
-**Performance:** ~25-30ms per frame, ~37-45 FPS. FPN3 uses 2 levels in ROS2
-(level 0: pedestrian/bicycle, level 1: cars) to stay within memory budget
-when running concurrently with camera_node.
+**Performance:** ~25-30ms per frame, ~37-45 FPS. Runs the full 3-level FPN3
+(`max_levels` defaults to 3 and the node does not lower it), so all 10 classes
+— including trucks/buses/trailers on the coarse levels — are detected even
+while running concurrently with camera_node.
 
 **Prerequisites:**
 ```bash

@@ -17,7 +17,7 @@ and add full 3-level FPN support for nuScenes 10-class detection.
 | `tensorrt.cpp` | Full TRT 10.x API port (binding API removed in TRT 10) |
 | `lidar-backbone.hpp` | Added multi-level virtual accessors (`cls1/box1/dir1`, `cls2/box2/dir2`, `is_fpn3()`) |
 | `lidar-backbone.cu` | CHW scatter kernel + FPN3 backbone engine (10 bindings, 3 output levels) |
-| `pointpillar.hpp` | Added `max_levels` to `CoreParameter` (1=level0, 2=+cars, 3=full FPN3) |
+| `pointpillar.hpp` | Added `max_levels` to `CoreParameter` (1=level0, 2=+cars, 3=full FPN3; default 3) |
 | `pointpillar.cpp` | Runs postprocess on all FPN levels, merges results; `make_level_param()` scales anchors per level |
 | `main.cpp` | nuScenes voxelization + postprocess params; FPN3 engine path |
 | `lidar-postprocess.hpp` | nuScenes 10 classes, 8 anchors, bbox code size 9, nuScenes score/NMS thresholds |
@@ -61,8 +61,11 @@ objects — they are detected at level 1 (100×100, ×2 anchor scale) and level 
 | 1 | 100×100 | ×2 | car, construction_vehicle |
 | 2 | 50×50 | ×4 | truck, bus, trailer |
 
-`max_levels=3` in standalone binary.
-`max_levels=2` in ROS2 deployment (memory constrained with concurrent camera TRT engine).
+`max_levels` defaults to **3 (full FPN3)** and is used as-is in both the
+standalone binary and the ROS2 `lidar_detection_node` — so all three levels
+(including trucks/buses/trailers) are decoded in the live pipeline. The knob
+exists to drop coarse levels (→ 2 or 1) and trade large-object recall for
+memory if a deployment ever needs it, but nothing currently lowers it.
 
 ---
 

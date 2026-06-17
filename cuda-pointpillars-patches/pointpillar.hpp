@@ -31,10 +31,13 @@
  *     feature_size    : nvtype::Int2(200, 200)  (level 0, 400×400/2)
  *
  *   CoreParameter:
- *     Added max_levels field (default 3):
- *       1 = level 0 only (pedestrian/bicycle, memory-safe for ROS2)
- *       2 = level 0+1 (+ cars)
- *       3 = all levels (+ trucks/buses, standalone only)
+ *     Added max_levels field (default 3 = full FPN3):
+ *       1 = level 0 only (pedestrian/bicycle/cone)
+ *       2 = level 0+1 (+ cars/construction_vehicle)
+ *       3 = all levels (+ trucks/buses/trailers)   ← default, used everywhere
+ *     Both the standalone binary and the ROS2 lidar_detection_node run the
+ *     default of 3; the knob exists to trade large-object recall for memory
+ *     if ever needed, but nothing currently lowers it.
  *     lidar_model: "../model/pointpillar_fpn3.plan"
  *
  *   nuScenes classes (confirmed via mmdetection3d inference_detector):
@@ -54,7 +57,7 @@ namespace pointpillar {
 namespace lidar {
 
 struct CoreParameter {
-    int max_levels = 3;  // FPN levels to use (1=level0 only, 3=full FPN3)
+    int max_levels = 3;  // FPN levels to decode (1=level0 only, 3=full FPN3); default 3 used in standalone + ROS2
     VoxelizationParameter voxelization;
     std::string lidar_model;
     PostProcessParameter lidar_post;

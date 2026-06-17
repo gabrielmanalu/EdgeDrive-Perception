@@ -74,8 +74,12 @@ public:
         lidar_backbone_ = create_backbone(param.lidar_model);
         if (!lidar_backbone_) { printf("Failed backbone\n"); return false; }
 
-        // Create PostProcess instances for each level
-        // Use max_levels from param (default 3 for standalone, 1 for ROS2)
+        // Create PostProcess instances for each level.
+        // max_levels (CoreParameter, default 3) selects how many FPN levels
+        // to decode. Both standalone and the ROS2 node use the default of 3
+        // (full FPN3) unless a caller explicitly lowers it. The ': 1' branch
+        // only applies to a non-FPN3 (single-level) engine; the FPN3 plan
+        // used here reports is_fpn3()==true, so 'levels' = param.max_levels.
         int levels = lidar_backbone_->is_fpn3()
                      ? param.max_levels : 1;
         if (levels < 1) levels = 1;
